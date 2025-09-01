@@ -1,0 +1,284 @@
+{% extends "base.html" %}
+
+{% block title %}Portfolio - Stock Trading System{% endblock %}
+
+{% block content %}
+<div x-data="portfolioPage" class="space-y-6">
+    <!-- Portfolio Summary -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div class="bg-white overflow-hidden shadow rounded-lg card-shadow">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-wallet text-indigo-600 text-2xl"></i>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Total Equity</dt>
+                            <dd class="text-lg font-medium text-gray-900" x-text="formatCurrency(totalEquity)"></dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-white overflow-hidden shadow rounded-lg card-shadow">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-chart-line text-green-600 text-2xl" :class="totalPnL >= 0 ? 'text-green-600' : 'text-red-600'"></i>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Total P&L</dt>
+                            <dd class="text-lg font-medium" :class="totalPnL >= 0 ? 'text-green-600' : 'text-red-600'" x-text="formatCurrency(totalPnL)"></dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-white overflow-hidden shadow rounded-lg card-shadow">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-percentage text-blue-600 text-2xl"></i>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Available Margin</dt>
+                            <dd class="text-lg font-medium text-gray-900" x-text="formatCurrency(availableMargin)"></dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Positions and Holdings Tabs -->
+    <div class="bg-white shadow rounded-lg card-shadow">
+        <div class="border-b border-gray-200">
+            <nav class="-mb-px flex space-x-8 px-6">
+                <button @click="activeTab = 'positions'" 
+                        class="py-4 px-1 border-b-2 font-medium text-sm"
+                        :class="activeTab === 'positions' ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'">
+                    <span x-text="'Positions (' + positions.length + ')'">Positions (0)</span>
+                </button>
+                <button @click="activeTab = 'holdings'" 
+                        class="py-4 px-1 border-b-2 font-medium text-sm"
+                        :class="activeTab === 'holdings' ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'">
+                    <span x-text="'Holdings (' + holdings.length + ')'">Holdings (0)</span>
+                </button>
+            </nav>
+        </div>
+
+        <!-- Positions Tab -->
+        <div x-show="activeTab === 'positions'" class="p-6">
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Symbol</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Quantity</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Avg Price</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">LTP</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">P&L</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">P&L %</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200">
+                        <template x-for="position in positions" :key="position.symbol">
+                            <tr class="hover:bg-gray-50">
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <div class="text-sm font-medium text-gray-900" x-text="position.symbol"></div>
+                                    <div class="text-sm text-gray-500" x-text="position.exchange || 'NSE'"></div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="position.quantity"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="formatCurrency(position.avg_price)"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="formatCurrency(position.ltp)"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium" 
+                                    :class="position.pnl >= 0 ? 'text-green-600' : 'text-red-600'" 
+                                    x-text="formatCurrency(position.pnl)"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium" 
+                                    :class="position.pnl_percent >= 0 ? 'text-green-600' : 'text-red-600'" 
+                                    x-text="formatPercentage(position.pnl_percent)"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                    <button @click="closePosition(position)" 
+                                            class="text-red-600 hover:text-red-900">
+                                        Close
+                                    </button>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+                
+                <div x-show="positions.length === 0" class="text-center py-8">
+                    <i class="fas fa-chart-line text-gray-400 text-4xl mb-4"></i>
+                    <p class="text-gray-500">No open positions</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Holdings Tab -->
+        <div x-show="activeTab === 'holdings'" class="p-6">
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Symbol</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Quantity</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Avg Price</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">LTP</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Market Value</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">P&L</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">P&L %</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200">
+                        <template x-for="holding in holdings" :key="holding.symbol">
+                            <tr class="hover:bg-gray-50">
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <div class="text-sm font-medium text-gray-900" x-text="holding.symbol"></div>
+                                    <div class="text-sm text-gray-500" x-text="holding.exchange || 'NSE'"></div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="holding.quantity"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="formatCurrency(holding.avg_price)"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="formatCurrency(holding.ltp)"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="formatCurrency(holding.market_value)"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium" 
+                                    :class="holding.pnl >= 0 ? 'text-green-600' : 'text-red-600'" 
+                                    x-text="formatCurrency(holding.pnl)"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium" 
+                                    :class="holding.pnl_percent >= 0 ? 'text-green-600' : 'text-red-600'" 
+                                    x-text="formatPercentage(holding.pnl_percent)"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+                
+                <div x-show="holdings.length === 0" class="text-center py-8">
+                    <i class="fas fa-briefcase text-gray-400 text-4xl mb-4"></i>
+                    <p class="text-gray-500">No holdings found</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('alpine:init', () => {
+    Alpine.data('portfolioPage', () => ({
+        activeTab: 'positions',
+        totalEquity: 0,
+        totalPnL: 0,
+        availableMargin: 0,
+        positions: [],
+        holdings: [],
+        
+        async init() {
+            await this.loadPortfolioData();
+            // Refresh every 30 seconds
+            setInterval(() => this.loadPortfolioData(), 30000);
+        },
+        
+        async loadPortfolioData() {
+            try {
+                console.log('Loading portfolio data...');
+                // Load all portfolio data from the single, efficient summary endpoint
+                const response = await fetch('/api/portfolio/summary');
+                const data = await response.json();
+                console.log('Received portfolio summary data from /api/portfolio/summary:', data);
+                
+                // Update summary values
+                this.totalEquity = data.total_equity || 0;
+                this.availableMargin = data.available_margin || 0;
+                this.totalPnL = data.total_pnl || 0;
+                
+                // Process and update positions and holdings
+                this.positions = this.processPositions(data.positions || []);
+                this.holdings = this.processHoldings(data.holdings || []);
+                
+                console.log('Updated portfolio state:');
+                console.log('- Total Equity:', this.totalEquity);
+                console.log('- Available Margin:', this.availableMargin);
+                console.log('- Total PnL:', this.totalPnL);
+                console.log('- Positions count:', this.positions.length);
+                console.log('- Holdings count:', this.holdings.length);
+                console.log('- Processed positions:', this.positions);
+                console.log('- Processed holdings:', this.holdings);
+                
+            } catch (error) {
+                console.error('Error loading portfolio data:', error);
+                console.error('Detailed error:', error.stack);
+                showToast('Error loading portfolio data', 'error');
+            }
+        },
+        processPositions(positions) {
+            return positions.map(position => ({
+                ...position,
+                pnl: position.pnl || 0,
+                pnl_percent: this.calculatePnLPercent(position.avg_price, position.ltp),
+                ltp: position.ltp || position.avg_price,
+                avg_price: position.avg_price || 0,
+                quantity: position.quantity || 0
+            }));
+        },
+        
+        processHoldings(holdings) {
+            return holdings.map(holding => ({
+                ...holding,
+                market_value: (holding.quantity || 0) * (
+                    holding.ltp !== undefined ? holding.ltp :
+                    holding.avg_price !== undefined ? holding.avg_price : 0
+                ),
+                pnl: ((holding.ltp || holding.avg_price || 0) - (holding.avg_price || 0)) * (holding.quantity || 0),
+                pnl_percent: this.calculatePnLPercent(holding.avg_price, holding.ltp),
+                ltp: holding.ltp || holding.avg_price,
+                avg_price: holding.avg_price || 0,
+                quantity: holding.quantity || 0
+            }));
+        },
+        
+        calculatePnLPercent(avgPrice, ltp) {
+            if (!avgPrice || avgPrice === 0) return 0;
+            return ((ltp - avgPrice) / avgPrice) * 100;
+        },
+        
+        async closePosition(position) {
+            if (!confirm(`Are you sure you want to close position for ${position.symbol}?`)) {
+                return;
+            }
+            
+            try {
+                // This would typically create a sell signal or place a market order
+                showToast(`Close position request for ${position.symbol} submitted`, 'info');
+                
+                // In a real implementation, you would:
+                // 1. Create an exit signal
+                // 2. Or place a market order directly
+                // 3. Refresh the positions after execution
+                
+            } catch (error) {
+                console.error('Error closing position:', error);
+                showToast('Error closing position', 'error');
+            }
+        },
+        
+        formatCurrency(amount) {
+            if (amount === null || amount === undefined) return '₹0';
+            return new Intl.NumberFormat('en-IN', {
+                style: 'currency',
+                currency: 'INR'
+            }).format(amount);
+        },
+        
+        formatPercentage(value) {
+            if (value === null || value === undefined) return '0.00%';
+            return value.toFixed(2) + '%';
+        }
+    }));
+});
+</script>
+{% endblock %}

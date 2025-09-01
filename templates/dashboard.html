@@ -1,0 +1,357 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Stock Trading System{% endblock %}
+
+{% block content %}
+<div x-data="dashboard" class="space-y-6">
+    <!-- Header Stats -->
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <!-- Total Equity -->
+        <div class="bg-white overflow-hidden shadow rounded-lg card-shadow">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-wallet text-indigo-600 text-2xl"></i>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Total Equity</dt>
+                            <dd class="text-lg font-medium text-gray-900" x-text="formatCurrency(totalEquity)"></dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Daily P&L -->
+        <div class="bg-white overflow-hidden shadow rounded-lg card-shadow">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-chart-line text-green-600 text-2xl" :class="dailyPnL >= 0 ? 'text-green-600' : 'text-red-600'"></i>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Daily P&L</dt>
+                            <dd class="text-lg font-medium" :class="dailyPnL >= 0 ? 'text-green-600' : 'text-red-600'" x-text="formatCurrency(dailyPnL)"></dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Open Positions -->
+        <div class="bg-white overflow-hidden shadow rounded-lg card-shadow">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-briefcase text-blue-600 text-2xl"></i>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Open Positions</dt>
+                            <dd class="text-lg font-medium text-gray-900" x-text="positionsCount"></dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Pending Signals -->
+        <div class="bg-white overflow-hidden shadow rounded-lg card-shadow">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-bell text-yellow-600 text-2xl"></i>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Pending Signals</dt>
+                            <dd class="text-lg font-medium text-gray-900" x-text="pendingSignals"></dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Charts and Activity -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Equity Curve Chart -->
+        <div class="bg-white shadow rounded-lg card-shadow">
+            <div class="px-4 py-5 sm:p-6">
+                <h3 class="text-lg leading-6 font-medium text-gray-900 mb-4">Equity Curve</h3>
+                <div class="h-64">
+                    <canvas id="equityChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Recent Activity -->
+        <div class="bg-white shadow rounded-lg card-shadow">
+            <div class="px-4 py-5 sm:p-6">
+                <h3 class="text-lg leading-6 font-medium text-gray-900 mb-4">Recent Activity</h3>
+                <div class="flow-root">
+                    <ul class="-mb-8 max-h-64 overflow-y-auto">
+                        <template x-for="(activity, index) in recentActivity" :key="index">
+                            <li>
+                                <div class="relative pb-8" x-show="index < recentActivity.length - 1">
+                                    <span class="absolute top-4 left-4 -ml-px h-full w-0.5 bg-gray-200"></span>
+                                </div>
+                                <div class="relative flex space-x-3">
+                                    <div>
+                                        <span class="h-8 w-8 rounded-full flex items-center justify-center ring-8 ring-white"
+                                              :class="getActivityIcon(activity.type)">
+                                            <i :class="getActivityIconClass(activity.type)" class="text-white text-sm"></i>
+                                        </span>
+                                    </div>
+                                    <div class="min-w-0 flex-1 pt-1.5 flex justify-between space-x-4">
+                                        <div>
+                                            <p class="text-sm text-gray-500" x-text="activity.message"></p>
+                                        </div>
+                                        <div class="text-right text-sm whitespace-nowrap text-gray-500">
+                                            <time x-text="formatTime(activity.timestamp)"></time>
+                                        </div>
+                                    </div>
+                                </div>
+                            </li>
+                        </template>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick Actions -->
+    <div class="bg-white shadow rounded-lg card-shadow">
+        <div class="px-4 py-5 sm:p-6">
+            <h3 class="text-lg leading-6 font-medium text-gray-900 mb-4">Quick Actions</h3>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <button @click="toggleAutoTrade" 
+                        class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white focus:outline-none focus:ring-2 focus:ring-offset-2"
+                        :class="autoTrade ? 'bg-red-600 hover:bg-red-700 focus:ring-red-500' : 'bg-green-600 hover:bg-green-700 focus:ring-green-500'">
+                    <i :class="autoTrade ? 'fas fa-pause' : 'fas fa-play'" class="mr-2"></i>
+                    <span x-text="autoTrade ? 'Halt Trading' : 'Resume Trading'"></span>
+                </button>
+                
+                <button @click="refreshData" 
+                        class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                    <i class="fas fa-sync-alt mr-2"></i>
+                    Refresh Data
+                </button>
+                
+                <button @click="generateReport" 
+                        class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                    <i class="fas fa-file-pdf mr-2"></i>
+                    Generate Report
+                </button>
+                
+                <a href="/signals" 
+                   class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                    <i class="fas fa-list mr-2"></i>
+                    View Signals
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('alpine:init', () => {
+    Alpine.data('dashboard', () => ({
+        totalEquity: 0,
+        dailyPnL: 0,
+        positionsCount: 0,
+        pendingSignals: 0,
+        autoTrade: false,
+        recentActivity: [],
+        equityChart: null,
+        
+        async init() {
+            await this.loadDashboardData();
+            this.initEquityChart();
+            // Refresh every 30 seconds
+            setInterval(() => this.loadDashboardData(), 30000);
+        },
+        
+        async loadDashboardData() {
+            try {
+                // Load portfolio summary
+                const portfolioResponse = await fetch('/api/portfolio/summary');
+                const portfolioData = await portfolioResponse.json();
+                
+                this.totalEquity = portfolioData.total_equity || 0;
+                this.positionsCount = (portfolioData.positions || []).length;
+                
+                // Use total P&L from portfolio data as daily P&L for now
+                this.dailyPnL = portfolioData.total_pnl || 0;
+                
+                // Load pending signals - handle potential API errors gracefully
+                try {
+                    const signalsResponse = await fetch('/api/signals?status=pending');
+                    if (signalsResponse.ok) {
+                        const signalsData = await signalsResponse.json();
+                        this.pendingSignals = Array.isArray(signalsData) ? signalsData.length : 0;
+                    } else {
+                        this.pendingSignals = 0;
+                    }
+                } catch (error) {
+                    console.warn('Could not load signals data:', error);
+                    this.pendingSignals = 0;
+                }
+                
+                // Load system status - handle potential API errors gracefully
+                try {
+                    const statusResponse = await fetch('/api/system/status');
+                    if (statusResponse.ok) {
+                        const statusData = await statusResponse.json();
+                        this.autoTrade = statusData.auto_trade || false;
+                    } else {
+                        this.autoTrade = false;
+                    }
+                } catch (error) {
+                    console.warn('Could not load system status:', error);
+                    this.autoTrade = false;
+                }
+                
+                // Mock recent activity (in real implementation, this would come from API)
+                this.recentActivity = [
+                    { type: 'signal', message: 'New BUY signal for RELIANCE', timestamp: new Date().toISOString() },
+                    { type: 'execution', message: 'Order executed for TCS', timestamp: new Date(Date.now() - 300000).toISOString() },
+                    { type: 'risk', message: 'Daily loss limit check passed', timestamp: new Date(Date.now() - 600000).toISOString() }
+                ];
+                
+            } catch (error) {
+                console.error('Error loading dashboard data:', error);
+                showToast('Error loading dashboard data', 'error');
+            }
+        },
+        
+        initEquityChart() {
+            const ctx = document.getElementById('equityChart').getContext('2d');
+            
+            // Mock equity curve data
+            const dates = [];
+            const equityValues = [];
+            const baseEquity = 100000;
+            
+            for (let i = 30; i >= 0; i--) {
+                const date = new Date();
+                date.setDate(date.getDate() - i);
+                dates.push(date.toLocaleDateString());
+                
+                // Generate mock equity curve with some randomness
+                const randomChange = (Math.random() - 0.5) * 2000;
+                const equity = i === 30 ? baseEquity : equityValues[equityValues.length - 1] + randomChange;
+                equityValues.push(Math.max(equity, baseEquity * 0.9)); // Don't go below 90% of base
+            }
+            
+            this.equityChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: dates,
+                    datasets: [{
+                        label: 'Equity',
+                        data: equityValues,
+                        borderColor: 'rgb(99, 102, 241)',
+                        backgroundColor: 'rgba(99, 102, 241, 0.1)',
+                        tension: 0.1,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: false,
+                            ticks: {
+                                callback: function(value) {
+                                    return '₹' + value.toLocaleString();
+                                }
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    }
+                }
+            });
+        },
+        
+        async toggleAutoTrade() {
+            try {
+                const endpoint = this.autoTrade ? '/api/system/halt' : '/api/system/resume';
+                const response = await fetch(endpoint, { method: 'POST' });
+                
+                if (response.ok) {
+                    this.autoTrade = !this.autoTrade;
+                    showToast(`Trading ${this.autoTrade ? 'resumed' : 'halted'}`, 'success');
+                } else {
+                    showToast('Failed to toggle trading status', 'error');
+                }
+            } catch (error) {
+                console.error('Error toggling auto trade:', error);
+                showToast('Error toggling trading status', 'error');
+            }
+        },
+        
+        async refreshData() {
+            await this.loadDashboardData();
+            showToast('Data refreshed', 'success');
+        },
+        
+        async generateReport() {
+            try {
+                const response = await fetch('/api/reports/eod/generate', { method: 'POST' });
+                
+                if (response.ok) {
+                    showToast('Report generation started', 'success');
+                } else {
+                    showToast('Failed to generate report', 'error');
+                }
+            } catch (error) {
+                console.error('Error generating report:', error);
+                showToast('Error generating report', 'error');
+            }
+        },
+        
+        formatCurrency(amount) {
+            return new Intl.NumberFormat('en-IN', {
+                style: 'currency',
+                currency: 'INR'
+            }).format(amount);
+        },
+        
+        formatTime(timestamp) {
+            return new Date(timestamp).toLocaleTimeString('en-IN', { 
+                hour: '2-digit', 
+                minute: '2-digit' 
+            });
+        },
+        
+        getActivityIcon(type) {
+            const icons = {
+                signal: 'bg-yellow-500',
+                execution: 'bg-green-500',
+                risk: 'bg-red-500',
+                system: 'bg-blue-500'
+            };
+            return icons[type] || 'bg-gray-500';
+        },
+        
+        getActivityIconClass(type) {
+            const icons = {
+                signal: 'fas fa-bell',
+                execution: 'fas fa-check',
+                risk: 'fas fa-exclamation-triangle',
+                system: 'fas fa-cog'
+            };
+            return icons[type] || 'fas fa-info';
+        }
+    }));
+});
+</script>
+{% endblock %}

@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IIFL Authentication Management</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .status-card {
+            border-left: 4px solid #28a745;
+            transition: all 0.3s ease;
+        }
+        .status-card.error {
+            border-left-color: #dc3545;
+        }
+        .status-card.warning {
+            border-left-color: #ffc107;
+        }
+        .auth-form {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 2rem;
+        }
+        .btn-custom {
+            border-radius: 25px;
+            padding: 0.5rem 2rem;
+        }
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+        .status-connected {
+            background-color: #28a745;
+        }
+        .status-disconnected {
+            background-color: #dc3545;
+        }
+        .status-warning {
+            background-color: #ffc107;
+        }
+    </style>
+</head>
+<body class="bg-light">
+    <div class="container mt-5">
+        <div class="row justify-content-center">
+            <div class="col-md-10">
+                <div class="card shadow">
+                    <div class="card-header bg-primary text-white">
+                        <h4 class="mb-0">
+                            <i class="fas fa-shield-alt me-2"></i>
+                            IIFL Authentication Management
+                        </h4>
+                    </div>
+                    <div class="card-body">
+                        <!-- Status Section -->
+                        <div class="row mb-4">
+                            <div class="col-md-12">
+                                <div class="card status-card" id="statusCard">
+                                    <div class="card-body">
+                                        <h5 class="card-title">
+                                            <span class="status-indicator" id="statusIndicator"></span>
+                                            Connection Status
+                                        </h5>
+                                        <div id="statusContent">
+                                            <p class="mb-1"><strong>Status:</strong> <span id="authStatus">Checking...</span></p>
+                                            <p class="mb-1"><strong>Token Expiry:</strong> <span id="tokenExpiry">-</span></p>
+                                            <p class="mb-1"><strong>Auth Code Expiry:</strong> <span id="authCodeExpiry">-</span></p>
+                                            <p class="mb-0"><strong>Last Error:</strong> <span id="lastError">None</span></p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Auth Code Update Section -->
+                        <div class="row mb-4">
+                            <div class="col-md-6">
+                                <div class="auth-form">
+                                    <h5 class="mb-3">
+                                        <i class="fas fa-key me-2"></i>
+                                        Update Auth Code
+                                    </h5>
+                                    <form id="authCodeForm">
+                                        <div class="mb-3">
+                                            <label for="authCode" class="form-label">New Auth Code</label>
+                                            <input type="password" class="form-control" id="authCode" 
+                                                   placeholder="Enter your IIFL auth code" required>
+                                            <div class="form-text">
+                                                Get this from IIFL: Settings → API → Generate Auth Code
+                                            </div>
+                                        </div>
+                                        <button type="submit" class="btn btn-primary btn-custom">
+                                            <i class="fas fa-sync-alt me-2"></i>
+                                            Update Auth Code
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="auth-form">
+                                    <h5 class="mb-3">
+                                        <i class="fas fa-tools me-2"></i>
+                                        Quick Actions
+                                    </h5>
+                                    <div class="d-grid gap-2">
+                                        <button class="btn btn-outline-primary btn-custom" id="refreshTokenBtn">
+                                            <i class="fas fa-refresh me-2"></i>
+                                            Refresh Token
+                                        </button>
+                                        <button class="btn btn-outline-success btn-custom" id="testConnectionBtn">
+                                            <i class="fas fa-plug me-2"></i>
+                                            Test Connection
+                                        </button>
+                                        <button class="btn btn-outline-warning btn-custom" id="validateAuthBtn">
+                                            <i class="fas fa-check-circle me-2"></i>
+                                            Validate Auth Code
+                                        </button>
+                                        <button class="btn btn-outline-info btn-custom" id="checkStatusBtn">
+                                            <i class="fas fa-info-circle me-2"></i>
+                                            Check Status
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Instructions Section -->
+                        <div class="row">
+                            <div class="col-md-12">
+                                <div class="card border-info">
+                                    <div class="card-header bg-info text-white">
+                                        <h6 class="mb-0">
+                                            <i class="fas fa-info-circle me-2"></i>
+                                            Instructions
+                                        </h6>
+                                    </div>
+                                    <div class="card-body">
+                                        <ol class="mb-0">
+                                            <li>Log in to your IIFL trading account</li>
+                                            <li>Navigate to <strong>Settings → API → Generate Auth Code</strong></li>
+                                            <li>Copy the generated auth code</li>
+                                            <li>Paste it in the form above and click "Update Auth Code"</li>
+                                            <li>The system will automatically handle token refresh daily</li>
+                                        </ol>
+                                        <div class="alert alert-warning mt-3 mb-0">
+                                            <i class="fas fa-exclamation-triangle me-2"></i>
+                                            <strong>Note:</strong> Auth codes expire daily and need to be updated each trading day.
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3">
+        <div id="successToast" class="toast" role="alert">
+            <div class="toast-header bg-success text-white">
+                <i class="fas fa-check-circle me-2"></i>
+                <strong class="me-auto">Success</strong>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast"></button>
+            </div>
+            <div class="toast-body" id="successMessage"></div>
+        </div>
+        
+        <div id="errorToast" class="toast" role="alert">
+            <div class="toast-header bg-danger text-white">
+                <i class="fas fa-exclamation-circle me-2"></i>
+                <strong class="me-auto">Error</strong>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast"></button>
+            </div>
+            <div class="toast-body" id="errorMessage"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // API endpoints
+        const API_BASE = '/api/auth';
+        
+        // Toast elements
+        const successToast = new bootstrap.Toast(document.getElementById('successToast'));
+        const errorToast = new bootstrap.Toast(document.getElementById('errorToast'));
+        
+        // Show success message
+        function showSuccess(message) {
+            document.getElementById('successMessage').textContent = message;
+            successToast.show();
+        }
+        
+        // Show error message
+        function showError(message) {
+            document.getElementById('errorMessage').innerHTML = message;
+            errorToast.show();
+        }
+        
+        // Update status display
+        function updateStatus(status) {
+            const statusCard = document.getElementById('statusCard');
+            const statusIndicator = document.getElementById('statusIndicator');
+            const authStatus = document.getElementById('authStatus');
+            const tokenExpiry = document.getElementById('tokenExpiry');
+            const authCodeExpiry = document.getElementById('authCodeExpiry');
+            const lastError = document.getElementById('lastError');
+            
+            // Reset classes
+            statusCard.className = 'card status-card';
+            statusIndicator.className = 'status-indicator';
+            
+            if (status.is_authenticated) {
+                statusCard.classList.add('success');
+                statusIndicator.classList.add('status-connected');
+                authStatus.textContent = 'Connected';
+            } else {
+                statusCard.classList.add('error');
+                statusIndicator.classList.add('status-disconnected');
+                authStatus.textContent = 'Disconnected';
+            }
+            
+            tokenExpiry.textContent = status.token_expiry ? 
+                new Date(status.token_expiry).toLocaleString() : 'Not available';
+            authCodeExpiry.textContent = status.auth_code_expiry ? 
+                new Date(status.auth_code_expiry).toLocaleString() : 'Not available';
+            lastError.textContent = status.last_error || 'None';
+            
+            // Check if auth code is expiring soon
+            if (status.auth_code_expiry) {
+                const expiry = new Date(status.auth_code_expiry);
+                const now = new Date();
+                const hoursUntilExpiry = (expiry - now) / (1000 * 60 * 60);
+                
+                if (hoursUntilExpiry < 2) {
+                    statusCard.classList.remove('success');
+                    statusCard.classList.add('warning');
+                    statusIndicator.classList.remove('status-connected');
+                    statusIndicator.classList.add('status-warning');
+                }
+            }
+        }
+        
+        // Check authentication status
+        async function checkStatus() {
+            try {
+                const response = await fetch(`${API_BASE}/status`);
+                const status = await response.json();
+                updateStatus(status);
+            } catch (error) {
+                showError('Failed to check status: ' + error.message);
+            }
+        }
+        
+        // Update auth code
+        document.getElementById('authCodeForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const authCode = document.getElementById('authCode').value;
+            const submitBtn = e.target.querySelector('button[type="submit"]');
+            
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Updating...';
+            
+            try {
+                const response = await fetch(`${API_BASE}/update-auth-code`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ auth_code: authCode })
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok && result.success) {
+                    showSuccess('Auth code updated successfully!');
+                    document.getElementById('authCode').value = '';
+                    checkStatus();
+                } else {
+                    // Handle detailed error messages with line breaks
+                    const errorMsg = result.detail || 'Failed to update auth code';
+                    showError(errorMsg.replace(/\n/g, '<br>'));
+                }
+            } catch (error) {
+                showError('Failed to update auth code: ' + error.message);
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = '<i class="fas fa-sync-alt me-2"></i>Update Auth Code';
+            }
+        });
+        
+        // Refresh token
+        document.getElementById('refreshTokenBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('refreshTokenBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Refreshing...';
+            
+            try {
+                const response = await fetch(`${API_BASE}/refresh-token`, {
+                    method: 'POST'
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok && result.success) {
+                    showSuccess('Token refreshed successfully!');
+                    checkStatus();
+                } else {
+                    showError(result.detail || 'Failed to refresh token');
+                }
+            } catch (error) {
+                showError('Failed to refresh token: ' + error.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-refresh me-2"></i>Refresh Token';
+            }
+        });
+        
+        // Test connection
+        document.getElementById('testConnectionBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('testConnectionBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Testing...';
+            
+            try {
+                const response = await fetch(`${API_BASE}/test-connection`, {
+                    method: 'POST'
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok && result.success) {
+                    showSuccess('Connection test successful!');
+                } else {
+                    showError(result.detail || 'Connection test failed');
+                }
+            } catch (error) {
+                showError('Connection test failed: ' + error.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-plug me-2"></i>Test Connection';
+            }
+        });
+        
+        // Validate auth code button
+        document.getElementById('validateAuthBtn').addEventListener('click', async () => {
+            const authCode = document.getElementById('authCode').value.trim();
+            if (!authCode) {
+                showError('Please enter an auth code to validate');
+                return;
+            }
+            
+            const btn = document.getElementById('validateAuthBtn');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Validating...';
+            
+            try {
+                const response = await fetch(`${API_BASE}/validate-auth-code`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ auth_code: authCode })
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok && result.success) {
+                    showSuccess('Auth code is valid! You can now update it.');
+                } else {
+                    showError('Auth code validation failed. Please check the code.');
+                }
+            } catch (error) {
+                showError('Failed to validate auth code: ' + error.message);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-check-circle me-2"></i>Validate Auth Code';
+            }
+        });
+        
+        // Check status button
+        document.getElementById('checkStatusBtn').addEventListener('click', checkStatus);
+        
+        // Initial status check
+        checkStatus();
+        
+        // Auto-refresh status every 30 seconds
+        setInterval(checkStatus, 30000);
+    </script>
+</body>
+</html>

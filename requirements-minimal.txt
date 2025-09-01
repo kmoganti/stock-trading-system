@@ -1,0 +1,40 @@
+# Core Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Database
+sqlalchemy==2.0.23
+aiosqlite==0.19.0
+
+# HTTP Client
+httpx==0.25.2
+requests==2.31.0
+
+# Telegram Bot
+python-telegram-bot==20.7
+
+# Basic Data Processing (without heavy dependencies)
+# pandas==2.1.4  # Commented out - requires C++ compiler
+# numpy==1.25.2  # Commented out - requires C++ compiler
+# ta==0.10.2     # Commented out - depends on pandas/numpy
+# matplotlib==3.8.2  # Commented out - requires C++ compiler
+
+# Reporting (basic)
+reportlab==4.0.7
+jinja2==3.1.2
+
+# Security & Auth
+python-jose[cryptography]==3.3.0
+python-multipart==0.0.6
+
+# Environment & Config
+python-dotenv==1.0.0
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+
+# Development
+black==23.11.0

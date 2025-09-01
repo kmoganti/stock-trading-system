@@ -1,0 +1,26 @@
+# Core Framework
+fastapi
+uvicorn
+pydantic
+pydantic-settings
+
+# Database
+sqlalchemy
+aiosqlite
+
+# HTTP Client
+httpx
+requests
+
+# Telegram Bot
+python-telegram-bot
+
+# Reporting (basic)
+jinja2
+
+# Environment & Config
+python-dotenv
+
+# Testing
+pytest
+pytest-asyncio
