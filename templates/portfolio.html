@@ -141,7 +141,7 @@
                             <tr class="hover:bg-gray-50">
                                 <td class="px-6 py-4 whitespace-nowrap">
                                     <div class="text-sm font-medium text-gray-900" x-text="holding.symbol"></div>
-                                    <div class="text-sm text-gray-500" x-text="holding.exchange || 'NSE'"></div>
+                                    <div class="text-sm text-gray-500" x-text="holding.company_name || 'NSE'"></div>
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="holding.quantity"></td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="formatCurrency(holding.avg_price)"></td>
@@ -192,7 +192,7 @@ document.addEventListener('alpine:init', () => {
                 console.log('Received portfolio summary data from /api/portfolio/summary:', data);
                 
                 // Update summary values
-                this.totalEquity = data.total_equity || 0;
+                this.totalEquity = data.total_value || 0;
                 this.availableMargin = data.available_margin || 0;
                 this.totalPnL = data.total_pnl || 0;
                 
@@ -229,13 +229,10 @@ document.addEventListener('alpine:init', () => {
         processHoldings(holdings) {
             return holdings.map(holding => ({
                 ...holding,
-                market_value: (holding.quantity || 0) * (
-                    holding.ltp !== undefined ? holding.ltp :
-                    holding.avg_price !== undefined ? holding.avg_price : 0
-                ),
-                pnl: ((holding.ltp || holding.avg_price || 0) - (holding.avg_price || 0)) * (holding.quantity || 0),
-                pnl_percent: this.calculatePnLPercent(holding.avg_price, holding.ltp),
-                ltp: holding.ltp || holding.avg_price,
+                market_value: holding.current_value || 0,
+                pnl: holding.pnl || 0,
+                pnl_percent: holding.pnl_percent || 0,
+                ltp: holding.ltp || 0,
                 avg_price: holding.avg_price || 0,
                 quantity: holding.quantity || 0
             }));

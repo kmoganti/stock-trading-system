@@ -69,12 +69,16 @@ async def get_portfolio_summary(
         portfolio_data, margin_info = await asyncio.gather(portfolio_data_task, margin_info_task)
         
         summary = {
-            "total_equity": margin_info.get("totalEquity", 0) if margin_info else 0,
+            "total_value": portfolio_data.get("total_value", 0.0),
+            "total_invested": portfolio_data.get("total_invested", 0.0),
+            "total_pnl": portfolio_data.get("total_pnl", 0.0),
+            "total_pnl_percent": portfolio_data.get("total_pnl_percent", 0.0),
             "available_margin": margin_info.get("availableMargin", 0) if margin_info else 0,
             "used_margin": margin_info.get("usedMargin", 0) if margin_info else 0,
-            "total_pnl": portfolio_data.get("total_pnl", 0.0),
             "positions": portfolio_data.get("positions", []),
             "holdings": portfolio_data.get("holdings", []),
+            "holdings_count": len(portfolio_data.get("holdings", [])),
+            "positions_count": len(portfolio_data.get("positions", [])),
             "timestamp": datetime.now().isoformat()
         }
         

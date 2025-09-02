@@ -146,68 +146,77 @@ class DataFetcher:
             logger.error(f"Error fetching market depth for {symbol}: {str(e)}")
             return None
     
-    def _get_mock_portfolio_data(self) -> Dict[str, Any]:
-        """Generate mock portfolio data for development/testing"""
-        import random
-        from datetime import datetime
+
+    def _process_holdings_data(self, holdings_raw: List[Dict]) -> List[Dict]:
+        """Process raw IIFL holdings data into standardized format"""
+        processed_holdings = []
         
-        mock_positions = [
-            {
-                "symbol": "RELIANCE",
-                "quantity": 50,
-                "avg_price": 2450.75,
-                "ltp": 2465.30,
-                "pnl": 729.0,
-                "pnl_percent": 0.59
-            },
-            {
-                "symbol": "TCS",
-                "quantity": 25,
-                "avg_price": 3890.20,
-                "ltp": 3875.45,
-                "pnl": -368.75,
-                "pnl_percent": -0.38
-            },
-            {
-                "symbol": "HDFCBANK",
-                "quantity": 30,
-                "avg_price": 1650.80,
-                "ltp": 1672.15,
-                "pnl": 640.50,
-                "pnl_percent": 1.29
-            }
-        ]
+        for holding in holdings_raw:
+            try:
+                symbol = holding.get("nseTradingSymbol", "").replace("-EQ", "")
+                quantity = holding.get("totalQuantity", 0)
+                avg_price = holding.get("averageTradedPrice", 0)
+                ltp = holding.get("previousDayClose", 0)  # Using previous close as current price
+                
+                if quantity > 0 and avg_price > 0:
+                    current_value = quantity * ltp
+                    invested_value = quantity * avg_price
+                    pnl = current_value - invested_value
+                    pnl_percent = (pnl / invested_value * 100) if invested_value > 0 else 0
+                    
+                    processed_holdings.append({
+                        "symbol": symbol,
+                        "company_name": holding.get("formattedInstrumentName", ""),
+                        "isin": holding.get("isin", ""),
+                        "quantity": quantity,
+                        "avg_price": avg_price,
+                        "ltp": ltp,
+                        "current_value": current_value,
+                        "invested_value": invested_value,
+                        "pnl": pnl,
+                        "pnl_percent": pnl_percent,
+                        "product": holding.get("product", "")
+                    })
+            except Exception as e:
+                logger.error(f"Error processing holding {holding}: {str(e)}")
+                continue
         
-        mock_holdings = [
-            {
-                "symbol": "INFY",
-                "quantity": 100,
-                "avg_price": 1420.30,
-                "ltp": 1445.60,
-                "value": 144560.0,
-                "pnl": 2530.0,
-                "pnl_percent": 1.78
-            },
-            {
-                "symbol": "WIPRO",
-                "quantity": 200,
-                "avg_price": 425.75,
-                "ltp": 432.20,
-                "value": 86440.0,
-                "pnl": 1290.0,
-                "pnl_percent": 1.51
-            }
-        ]
+        return processed_holdings
+    
+    def _process_positions_data(self, positions_raw: Dict) -> List[Dict]:
+        """Process raw IIFL positions data into standardized format"""
+        # Handle case where positions result contains error message
+        if isinstance(positions_raw, dict) and "result" in positions_raw:
+            result = positions_raw["result"]
+            if isinstance(result, dict) and result.get("status") == "EC920":
+                # No positions found
+                logger.info("No positions found for user")
+                return []
+            elif isinstance(result, list):
+                # Process positions list
+                processed_positions = []
+                for position in result:
+                    try:
+                        symbol = position.get("symbol", "")
+                        quantity = position.get("quantity", 0)
+                        avg_price = position.get("avgPrice", 0)
+                        ltp = position.get("ltp", 0)
+                        pnl = position.get("pnl", 0)
+                        
+                        processed_positions.append({
+                            "symbol": symbol,
+                            "quantity": quantity,
+                            "avg_price": avg_price,
+                            "ltp": ltp,
+                            "pnl": pnl,
+                            "pnl_percent": (pnl / (quantity * avg_price) * 100) if quantity > 0 and avg_price > 0 else 0
+                        })
+                    except Exception as e:
+                        logger.error(f"Error processing position {position}: {str(e)}")
+                        continue
+                return processed_positions
         
-        total_pnl = sum(pos.get("pnl", 0) for pos in mock_positions)
-        total_value = sum(hold.get("value", 0) for hold in mock_holdings)
-        
-        return {
-            "holdings": mock_holdings,
-            "positions": mock_positions,
-            "total_value": total_value,
-            "total_pnl": total_pnl
-        }
+        return []
 
     async def get_portfolio_data(self) -> Dict[str, Any]:
         """Get complete portfolio data (holdings + positions)"""
@@ -216,15 +225,6 @@ class DataFetcher:
             
             if self._is_cache_valid(cache_key, 30):  # 30 sec cache
                 return self.cache[cache_key]
-            
-            # Check if we can authenticate first
-            auth_success = await self.iifl._ensure_authenticated()
-            
-            if not auth_success:
-                logger.warning("IIFL authentication failed, using mock data for development")
-                mock_data = self._get_mock_portfolio_data()
-                self._set_cache(cache_key, mock_data, 30)
-                return mock_data
             
             # Fetch holdings and positions concurrently
             holdings_task = self.iifl.get_holdings()
@@ -238,55 +238,58 @@ class DataFetcher:
                 "holdings": [],
                 "positions": [],
                 "total_value": 0.0,
-                "total_pnl": 0.0
+                "total_invested": 0.0,
+                "total_pnl": 0.0,
+                "total_pnl_percent": 0.0
             }
             
             # Process holdings
             if isinstance(holdings_result, dict) and holdings_result.get("status") == "Ok":
-                portfolio_data["holdings"] = holdings_result.get("resultData", [])
+                raw_holdings = holdings_result.get("result", [])
+                processed_holdings = self._process_holdings_data(raw_holdings)
+                portfolio_data["holdings"] = processed_holdings
+                
+                # Calculate totals from holdings
+                for holding in processed_holdings:
+                    portfolio_data["total_value"] += holding.get("current_value", 0)
+                    portfolio_data["total_invested"] += holding.get("invested_value", 0)
+                    portfolio_data["total_pnl"] += holding.get("pnl", 0)
+                    
             elif isinstance(holdings_result, dict):
                 error_msg = holdings_result.get("emsg", holdings_result.get("message", "Unknown error"))
                 logger.warning(f"Could not fetch holdings from IIFL API: {error_msg}")
             
             # Process positions
             if isinstance(positions_result, dict) and positions_result.get("status") == "Ok":
-                portfolio_data["positions"] = positions_result.get("resultData", [])
+                processed_positions = self._process_positions_data(positions_result)
+                portfolio_data["positions"] = processed_positions
                 
-                # Calculate total PnL from positions
-                for position in portfolio_data["positions"]:
-                    pnl = position.get("pnl", 0)
-                    if pnl:
-                        portfolio_data["total_pnl"] += float(pnl)
+                # Add positions PnL to total
+                for position in processed_positions:
+                    portfolio_data["total_pnl"] += position.get("pnl", 0)
+                    
             elif isinstance(positions_result, dict):
                 error_msg = positions_result.get("emsg", positions_result.get("message", "Unknown error"))
-                logger.warning(f"Could not fetch positions from IIFL API: {error_msg}")
+                logger.info(f"Positions API response: {error_msg}")
             
-            # If no real data available, use mock data
-            if not portfolio_data["holdings"] and not portfolio_data["positions"]:
-                logger.info("No real portfolio data available, using mock data")
-                mock_data = self._get_mock_portfolio_data()
-                self._set_cache(cache_key, mock_data, 30)
-                return mock_data
+            # Calculate total PnL percentage
+            if portfolio_data["total_invested"] > 0:
+                portfolio_data["total_pnl_percent"] = (portfolio_data["total_pnl"] / portfolio_data["total_invested"]) * 100
             
             self._set_cache(cache_key, portfolio_data, 30)
             return portfolio_data
             
         except Exception as e:
             logger.error(f"Error fetching portfolio data: {str(e)}")
-            logger.info("Falling back to mock data due to error")
-            return self._get_mock_portfolio_data()
+            return {
+                "holdings": [],
+                "positions": [],
+                "total_value": 0.0,
+                "total_invested": 0.0,
+                "total_pnl": 0.0,
+                "total_pnl_percent": 0.0
+            }
     
-    def _get_mock_margin_info(self) -> Dict[str, Any]:
-        """Generate mock margin info for development/testing"""
-        return {
-            "totalEquity": 500000.0,
-            "availableMargin": 350000.0,
-            "usedMargin": 150000.0,
-            "cashMargin": 200000.0,
-            "collateralMargin": 300000.0,
-            "adhocMargin": 0.0,
-            "notionalMargin": 0.0
-        }
 
     async def get_margin_info(self) -> Optional[Dict]:
         """Get margin and limit information"""
@@ -296,35 +299,21 @@ class DataFetcher:
             if self._is_cache_valid(cache_key, 60):  # 1 min cache
                 return self.cache[cache_key]
             
-            # Check if we can authenticate first
-            auth_success = await self.iifl._ensure_authenticated()
-            
-            if not auth_success:
-                logger.warning("IIFL authentication failed, using mock margin data for development")
-                mock_data = self._get_mock_margin_info()
-                self._set_cache(cache_key, mock_data, 60)
-                return mock_data
-            
             result = await self.iifl.get_limits()
             
             if result and result.get("status") == "Ok":
-                margin_data = result.get("resultData")
+                margin_data = result.get("result")
                 if margin_data:
                     self._set_cache(cache_key, margin_data, 60)
                     return margin_data
             elif result:
                 logger.warning(f"Failed to fetch margin info: {result.get('emsg', 'Unknown API error')}")
             
-            # Fallback to mock data if no real data available
-            logger.info("No real margin data available, using mock data")
-            mock_data = self._get_mock_margin_info()
-            self._set_cache(cache_key, mock_data, 60)
-            return mock_data
+            return None
             
         except Exception as e:
             logger.error(f"Error fetching margin info: {str(e)}")
-            logger.info("Falling back to mock margin data due to error")
-            return self._get_mock_margin_info()
+            return None
     
     async def calculate_required_margin(self, symbol: str, quantity: int, 
                                       transaction_type: str, price: Optional[float] = None) -> Optional[float]:
