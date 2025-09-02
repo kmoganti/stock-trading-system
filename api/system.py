@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 from typing import Dict, Any
 from datetime import datetime
 import logging
@@ -43,7 +44,7 @@ async def get_system_status(db: AsyncSession = Depends(get_db)) -> Dict[str, Any
         
         # Database connectivity
         try:
-            await db.execute("SELECT 1")
+            await db.execute(text("SELECT 1"))
             status["database_connected"] = True
             logger.info("Database connection status: True")
         except Exception as e:
