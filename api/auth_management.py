@@ -62,8 +62,8 @@ async def update_auth_code(auth_data: AuthCodeUpdate):
         service.session_token = None
         service.token_expiry = None
         
-        # Reinitialize bridge
-        service._initialize_bridge()
+        # Reinitialize auth expiry
+        service._initialize_auth_expiry()
         
         # Test authentication with detailed error reporting
         success = await service.authenticate()

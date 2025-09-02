@@ -1,21 +1,19 @@
 import asyncio
 import json
 import hashlib
-import tkinter as tk
-from tkinter import messagebox, simpledialog
+import requests
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 import logging
-from threading import Thread
 import os
-import httpx
+import time
 from config.settings import get_settings
-from bridgePy.connector import Connect
+from services.logging_service import trading_logger
 
 logger = logging.getLogger(__name__)
 
 class IIFLAPIService:
-    """IIFL Markets API integration service using BridgePy"""
+    """IIFL Markets API integration service using checksum-based authentication"""
     
     _instance = None
     _initialized = False
@@ -32,262 +30,315 @@ class IIFLAPIService:
             self.auth_code = self.settings.iifl_auth_code
             self.app_secret = self.settings.iifl_app_secret
             self.base_url = self.settings.iifl_base_url
-            self.bridge_connector: Optional[Connect] = None
             self.session_token: Optional[str] = None
             self.token_expiry: Optional[datetime] = None
-            self.auth_code_expiry: Optional[datetime] = None
-            self._initialize_bridge()
+            self.get_user_session_endpoint = "/getusersession"
             IIFLAPIService._initialized = True
     
-    def _initialize_bridge(self):
-        """Initialize Bridge connection"""
-        try:
-            # Set auth code expiry to next day at 9 AM (when new codes are typically generated)
-            tomorrow_9am = datetime.now().replace(hour=9, minute=0, second=0, microsecond=0) + timedelta(days=1)
-            self.auth_code_expiry = tomorrow_9am
-            logger.info("IIFL Bridge connection ready for initialization")
-        except Exception as e:
-            logger.error(f"Failed to initialize IIFL Bridge: {str(e)}")
-            self.bridge_connector = None
     
-    def _show_auth_code_popup(self) -> Optional[str]:
-        """Show popup to request new auth code from user"""
-        def get_auth_code():
-            root = tk.Tk()
-            root.withdraw()  # Hide the main window
-            
-            # Show info message first
-            messagebox.showinfo(
-                "IIFL Auth Code Required", 
-                "Your IIFL auth code has expired.\n\n"
-                "Please log in to your IIFL trading account and generate a new auth code.\n"
-                "You can find this in: Settings > API > Generate Auth Code"
-            )
-            
-            # Request new auth code
-            new_auth_code = simpledialog.askstring(
-                "Enter New Auth Code",
-                "Please enter your new IIFL auth code:",
-                show='*'  # Hide the input for security
-            )
-            
-            root.destroy()
-            return new_auth_code
+    
+    
+    def sha256_hash(self, input_string: str) -> str:
+        """Returns the SHA-256 hash of the input string."""
+        return hashlib.sha256(input_string.encode('utf-8')).hexdigest()
+    
+    def get_user_session(self, auth_code: str) -> Dict:
+        """Request a new user session from the IIFL API using checksum authentication."""
+        start_time = time.time()
+        
+        # Construct the checksum required by the API
+        checksum_str = self.client_id + auth_code + self.app_secret
+        checksum = self.sha256_hash(checksum_str)
+
+        url = self.base_url + self.get_user_session_endpoint
+        headers = {"Content-Type": "application/json"}
+        
+        # The payload for the session request includes the checksum
+        payload = {
+            "checkSum": checksum
+        }
+        
+        # Enhanced logging for IIFL API calls
+        logger.info(f"IIFL API Request: POST {url}")
+        logger.debug(f"Request headers: {headers}")
+        logger.debug(f"Request payload: {payload}")
+        
+        # Log to specialized API logger
+        trading_logger.log_system_event("iifl_api_request", {
+            "method": "POST",
+            "url": url,
+            "endpoint": self.get_user_session_endpoint,
+            "payload_keys": list(payload.keys())
+        })
         
         try:
-            # Run in separate thread to avoid blocking
-            import queue
-            result_queue = queue.Queue()
+            response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=30)
+            response_time = time.time() - start_time
             
-            def popup_thread():
-                result = get_auth_code()
-                result_queue.put(result)
+            # Enhanced response logging
+            logger.info(f"IIFL API Response: {response.status_code} in {response_time:.3f}s")
+            logger.debug(f"Response headers: {dict(response.headers)}")
+            logger.debug(f"Response text: {response.text}")
             
-            thread = Thread(target=popup_thread)
-            thread.daemon = True
-            thread.start()
-            thread.join(timeout=300)  # 5 minute timeout
+            # Log API call details
+            trading_logger.log_api_call(
+                endpoint=url,
+                method="POST",
+                status_code=response.status_code,
+                response_time=response_time,
+                error=None if response.status_code == 200 else f"HTTP {response.status_code}"
+            )
             
-            if not result_queue.empty():
-                return result_queue.get()
-            else:
-                logger.warning("Auth code popup timed out")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Error showing auth code popup: {str(e)}")
-            return None
-    
-    def _update_env_auth_code(self, new_auth_code: str):
-        """Update auth code in .env file and refresh settings"""
-        try:
-            env_path = os.path.join(os.getcwd(), '.env')
-            if os.path.exists(env_path):
-                with open(env_path, 'r') as f:
-                    lines = f.readlines()
-                
-                # Update the auth code line
-                for i, line in enumerate(lines):
-                    if line.startswith('IIFL_AUTH_CODE='):
-                        lines[i] = f'IIFL_AUTH_CODE={new_auth_code}\n'
-                        break
-                
-                with open(env_path, 'w') as f:
-                    f.writelines(lines)
-                
-                # Force reload settings to pick up new auth code
-                import config.settings
-                config.settings._settings = None  # Clear cached settings
-                self.settings = get_settings()  # Reload settings
-                self.auth_code = self.settings.iifl_auth_code  # Update instance variable
-                
-                logger.info("Auth code updated in .env file and settings refreshed")
-                return True
-        except Exception as e:
-            logger.error(f"Failed to update .env file: {str(e)}")
-        return False
+            response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
+            response_data = response.json()
+            
+            # Log successful response
+            trading_logger.log_system_event("iifl_api_response", {
+                "url": url,
+                "status_code": response.status_code,
+                "response_time_ms": response_time * 1000,
+                "response_keys": list(response_data.keys()) if isinstance(response_data, dict) else "non_dict"
+            })
+            
+            return response_data
+            
+        except requests.exceptions.RequestException as e:
+            response_time = time.time() - start_time
+            error_msg = f"Error during API request for user session: {e}"
+            
+            logger.error(error_msg)
+            
+            # Log API error
+            trading_logger.log_api_call(
+                endpoint=url,
+                method="POST",
+                status_code=0,
+                response_time=response_time,
+                error=str(e)
+            )
+            
+            trading_logger.log_error("iifl_api", e, {
+                "url": url,
+                "method": "POST",
+                "response_time": response_time
+            })
+            
+            return {}
     
     async def authenticate(self) -> bool:
-        """Authenticate with IIFL API using direct HTTP calls"""
+        """Authenticate with IIFL API using checksum-based authentication"""
         if not self.auth_code:
             logger.error("No auth code available for authentication")
             return False
         
-        # Check if auth code has expired (daily expiry)
-        if self.auth_code_expiry and datetime.now() >= self.auth_code_expiry:
-            logger.info("Auth code has expired")
-            return False
-        
         try:
-            logger.info("Attempting IIFL API authentication")
+            logger.info("Attempting IIFL API authentication with checksum method")
             
-            # IIFL API authentication payload based on official documentation
-            auth_payload = {
-                "ClientCode": self.client_id,
-                "Password": self.auth_code,
-                "My2PIN": self.app_secret,
-                "ConnectionType": "1"
-            }
+            # Use the working authentication method
+            response_data = self.get_user_session(self.auth_code)
             
-            headers = {
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "User-Agent": "Trading-System/1.0"
-            }
+            if response_data:
+                logger.info(f"Authentication response received: {json.dumps(response_data)}")
+                
+                # Handle both old and new IIFL API response formats
+                if response_data.get("stat") == "Ok" or response_data.get("status") == "Ok":
+                    # Extract session token from multiple possible fields
+                    session_token = (response_data.get("SessionToken") or 
+                                   response_data.get("sessionToken") or 
+                                   response_data.get("session_token") or
+                                   response_data.get("userSession") or
+                                   response_data.get("token"))
+                    
+                    if session_token:
+                        self.session_token = session_token
+                        self.token_expiry = None  # No expiry - token valid indefinitely
+                        logger.info(f"IIFL authentication successful. Token: {session_token[:10]}...")
+                        trading_logger.log_system_event("iifl_auth_success", {
+                            "token_preview": session_token[:10] + "...",
+                            "token_expiry": None,
+                            "response_format": "stat" if "stat" in response_data else "status"
+                        })
+                        return True
+                    else:
+                        logger.error("No session token found in IIFL response")
+                        trading_logger.log_error("iifl_auth_no_token", {
+                            "response_keys": list(response_data.keys()),
+                            "response_sample": str(response_data)[:200]
+                        })
+                elif response_data.get("stat") == "Not_ok" or response_data.get("status") == "Not_ok":
+                    error_msg = response_data.get("emsg") or response_data.get("message", "Authentication failed")
+                    logger.error(f"IIFL authentication failed: {error_msg}")
+                    trading_logger.log_error("iifl_auth_failed", {
+                        "error_message": error_msg,
+                        "response": response_data
+                    })
+                else:
+                    # Log unknown response structure for debugging
+                    logger.warning(f"Unknown IIFL response structure: {json.dumps(response_data)}")
+                    trading_logger.log_system_event("iifl_auth_unknown_response", {
+                        "response_keys": list(response_data.keys()),
+                        "response_sample": str(response_data)[:200]
+                    })
             
-            # Try multiple possible IIFL endpoints
-            endpoints_to_try = [
-                f"{self.base_url}/LoginRequestMobileNewbyClientcode",
-                f"{self.base_url}/LoginRequest", 
-                "https://datafeeds.iifl.in/interactive/LoginRequestMobileNewbyClientcode",
-                "https://ttblaze.iifl.com/apimarketdata/interactive/LoginRequestMobileNewbyClientcode"
-            ]
-            
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                for endpoint in endpoints_to_try:
-                    try:
-                        logger.info(f"Trying endpoint: {endpoint}")
-                        response = await client.post(endpoint, json=auth_payload, headers=headers)
-                        
-                        logger.info(f"Response status: {response.status_code}")
-                        logger.debug(f"Response text: {response.text}")
-                        
-                        if response.status_code == 200:
-                            try:
-                                data = response.json()
-                                
-                                # Check for successful authentication
-                                if (data.get("Status") == "Success" or 
-                                    data.get("status") == "Success" or
-                                    data.get("success") == True or
-                                    "SessionToken" in str(data)):
-                                    
-                                    # Extract session token from various possible locations
-                                    session_token = (
-                                        data.get("SessionToken") or 
-                                        data.get("sessionToken") or
-                                        data.get("token") or
-                                        data.get("Result", {}).get("SessionToken") or
-                                        data.get("result", {}).get("SessionToken")
-                                    )
-                                    
-                                    if session_token:
-                                        self.session_token = session_token
-                                        self.token_expiry = datetime.now() + timedelta(hours=23)
-                                        logger.info(f"IIFL authentication successful with endpoint: {endpoint}")
-                                        return True
-                                        
-                                # Log error details for debugging
-                                error_msg = (
-                                    data.get("Message") or 
-                                    data.get("message") or 
-                                    data.get("error") or
-                                    str(data)
-                                )
-                                logger.warning(f"Auth failed for {endpoint}: {error_msg}")
-                                
-                            except ValueError as e:
-                                logger.warning(f"Invalid JSON response from {endpoint}: {e}")
-                                
-                        elif response.status_code == 405:
-                            logger.warning(f"Method not allowed for {endpoint}")
-                        else:
-                            logger.warning(f"HTTP {response.status_code} for {endpoint}: {response.text}")
-                            
-                    except httpx.RequestError as e:
-                        logger.warning(f"Request failed for {endpoint}: {e}")
-                        continue
-            
-            # If all endpoints fail, log comprehensive error
-            logger.error("All IIFL authentication endpoints failed")
+            # If authentication fails, create mock session for development
+            logger.error("IIFL authentication failed")
             logger.info("Creating mock session for development")
             self.session_token = f"mock_token_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            self.token_expiry = datetime.now() + timedelta(hours=23)
+            self.token_expiry = None
             return True
                 
         except Exception as e:
             logger.error(f"IIFL API authentication exception: {str(e)}")
             logger.info("Creating mock session for development")
             self.session_token = f"mock_token_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            self.token_expiry = datetime.now() + timedelta(hours=23)
+            self.token_expiry = None
             return True
     
     async def _ensure_authenticated(self) -> bool:
         """Ensure we have a valid authentication"""
-        # If we have a valid token, don't re-authenticate
-        if self.session_token and self.token_expiry and datetime.now() < self.token_expiry:
+        # If we have a token, use it (no expiry check)
+        if self.session_token:
+            logger.debug(f"Using existing session token: {self.session_token[:10]}...")
             return True
             
-        # Only authenticate if we don't have a token or it's expired
-        if not self.session_token or not self.token_expiry or datetime.now() >= self.token_expiry:
+        # Only authenticate if we don't have a token
+        if not self.session_token:
+            logger.info("No session token found, attempting authentication")
             return await self.authenticate()
         
         return True
     
     async def _make_api_request(self, method: str, endpoint: str, data: Optional[Dict] = None) -> Optional[Dict]:
-        """Make authenticated API request using HTTP"""
+        """Make authenticated API request using session token"""
         if not await self._ensure_authenticated():
             return None
         
+        start_time = time.time()
+        url = f"{self.base_url}{endpoint}"
+        
         try:
-            url = f"{self.base_url}{endpoint}"
             headers = {
-                "Authorization": f"Bearer {self.session_token}",
                 "Content-Type": "application/json",
-                "User-Agent": "IIFL-Trading-System/1.0"
+                "User-Agent": "IIFL-Trading-System/1.0",
+                "Authorization": f"Bearer {self.session_token}"
             }
             
-            logger.info(f"IIFL API Request: {method} {url}")
-            if data:
-                logger.debug(f"Request Data: {json.dumps(data)}")
+            # Initialize data if None
+            if data is None:
+                data = {}
+            
+            # Enhanced request logging
+            logger.info(f"IIFL API Request: {method.upper()} {url}")
+            logger.debug(f"Request headers: {headers}")
+            logger.debug(f"Request data (without token): {json.dumps({k: v for k, v in data.items() if k != 'SessionToken'})}")
+            
+            # Log to specialized API logger
+            trading_logger.log_system_event("iifl_api_request", {
+                "method": method.upper(),
+                "url": url,
+                "endpoint": endpoint,
+                "has_bearer_token": bool(self.session_token),
+                "data_keys": list(data.keys())
+            })
 
-            async with httpx.AsyncClient() as client:
+            try:
                 if method.upper() == "GET":
-                    response = await client.get(url, headers=headers, params=data, timeout=30)
+                    response = requests.get(url, headers=headers, params=data, timeout=30)
                 elif method.upper() == "POST":
-                    response = await client.post(url, headers=headers, json=data, timeout=30)
+                    response = requests.post(url, headers=headers, data=json.dumps(data), timeout=30)
                 elif method.upper() == "PUT":
-                    response = await client.put(url, headers=headers, json=data, timeout=30)
+                    response = requests.put(url, headers=headers, data=json.dumps(data), timeout=30)
                 elif method.upper() == "DELETE":
-                    response = await client.delete(url, headers=headers, timeout=30)
+                    response = requests.delete(url, headers=headers, timeout=30)
                 else:
                     raise ValueError(f"Unsupported HTTP method: {method}")
-            
-            logger.info(f"IIFL API Response: {response.status_code}")
-            try:
-                response_data = response.json()
-                logger.debug(f"Response Data: {json.dumps(response_data)}")
-            except json.JSONDecodeError:
-                logger.debug(f"Response Data (non-JSON): {response.text}")
+                
+                response_time = time.time() - start_time
+                
+                # Enhanced response logging
+                logger.info(f"IIFL API Response: {response.status_code} in {response_time:.3f}s")
+                logger.debug(f"Response headers: {dict(response.headers)}")
+                
+                try:
+                    response_data = response.json()
+                    logger.debug(f"Response data: {json.dumps(response_data)}")
+                    
+                    # Log successful API call
+                    trading_logger.log_api_call(
+                        endpoint=url,
+                        method=method.upper(),
+                        status_code=response.status_code,
+                        response_time=response_time,
+                        error=None if response.status_code == 200 else f"HTTP {response.status_code}"
+                    )
+                    
+                    # Log response details
+                    trading_logger.log_system_event("iifl_api_response", {
+                        "url": url,
+                        "method": method.upper(),
+                        "status_code": response.status_code,
+                        "response_time_ms": response_time * 1000,
+                        "response_keys": list(response_data.keys()) if isinstance(response_data, dict) else "non_dict",
+                        "success": response.status_code == 200
+                    })
+                    
+                except json.JSONDecodeError:
+                    logger.debug(f"Response data (non-JSON): {response.text}")
+                    response_data = None
 
-            if response.status_code == 200:
-                return response.json()
-            else:
-                logger.error(f"IIFL API request failed: {response.status_code} - {response.text}")
+                if response.status_code == 200:
+                    return response_data
+                else:
+                    error_msg = f"IIFL API request failed: {response.status_code} - {response.text}"
+                    logger.error(error_msg)
+                    
+                    # Log API error
+                    trading_logger.log_api_call(
+                        endpoint=url,
+                        method=method.upper(),
+                        status_code=response.status_code,
+                        response_time=response_time,
+                        error=f"HTTP {response.status_code}: {response.text[:200]}"
+                    )
+                    
+                    return None
+                    
+            except requests.exceptions.RequestException as e:
+                response_time = time.time() - start_time
+                error_msg = f"IIFL API request exception: {str(e)}"
+                logger.error(error_msg)
+                
+                # Log request exception
+                trading_logger.log_api_call(
+                    endpoint=url,
+                    method=method.upper(),
+                    status_code=0,
+                    response_time=response_time,
+                    error=str(e)
+                )
+                
+                trading_logger.log_error("iifl_api", e, {
+                    "url": url,
+                    "method": method.upper(),
+                    "endpoint": endpoint,
+                    "response_time": response_time
+                })
+                
                 return None
                 
         except Exception as e:
-            logger.error(f"IIFL API request exception: {str(e)}")
+            response_time = time.time() - start_time
+            error_msg = f"IIFL API request exception: {str(e)}"
+            logger.error(error_msg)
+            
+            # Log general exception
+            trading_logger.log_error("iifl_api", e, {
+                "url": url,
+                "method": method.upper(),
+                "endpoint": endpoint,
+                "response_time": response_time
+            })
+            
             return None
     
     # User Profile & Limits
@@ -409,17 +460,21 @@ class IIFLAPIService:
             return False
     
     async def force_auth_code_refresh(self) -> bool:
-        """Force refresh of auth code (useful for testing or manual refresh)"""
-        logger.info("Forcing auth code refresh")
-        new_auth_code = self._show_auth_code_popup()
+        """Force refresh of auth code from env file"""
+        logger.info("Refreshing auth code from env file")
         
-        if new_auth_code:
-            self.auth_code = new_auth_code
-            self._update_env_auth_code(new_auth_code)
-            self._initialize_bridge()
-            return await self.authenticate()
+        # Reload settings to get updated auth code from env
+        from config.settings import get_settings
+        import config.settings
+        config.settings._settings = None  # Clear cached settings
+        self.settings = get_settings()
+        self.auth_code = self.settings.iifl_auth_code
         
-        return False
+        # Clear existing session to force re-authentication
+        self.session_token = None
+        self.token_expiry = None
+        
+        return await self.authenticate()
     
     async def __aenter__(self):
         """Async context manager entry"""

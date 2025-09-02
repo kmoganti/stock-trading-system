@@ -15,15 +15,26 @@ from api import (
 )
 from api.auth_management import router as auth_router
 
-# Configure logging
+# Import and configure logging service
+from services.logging_service import trading_logger
+import os
+
+# Ensure logs directory exists
+os.makedirs('logs', exist_ok=True)
+
+# Configure root logger to use our trading logger with DEBUG level
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler('logs/trading_system.log'),
         logging.StreamHandler()
     ]
 )
+
+# Suppress watchfiles logging spam
+logging.getLogger('watchfiles').setLevel(logging.WARNING)
+logging.getLogger('watchfiles.main').setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -32,15 +43,19 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     # Startup
     logger.info("Starting Stock Trading System...")
+    trading_logger.log_system_event("application_startup", {"version": "1.0.0"})
     await init_db()
     logger.info("Database initialized")
+    trading_logger.log_system_event("database_initialized")
     
     yield
     
     # Shutdown
     logger.info("Shutting down Stock Trading System...")
+    trading_logger.log_system_event("application_shutdown")
     await close_db()
     logger.info("Database connections closed")
+    trading_logger.log_system_event("database_closed")
 
 # Create FastAPI app
 app = FastAPI(
