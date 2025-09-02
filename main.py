@@ -13,6 +13,7 @@ from api import (
     system_router, signals_router, portfolio_router, 
     risk_router, reports_router, backtest_router, settings_router
 )
+from api.margin import router as margin_router
 from api.auth_management import router as auth_router
 
 # Import and configure logging service
@@ -83,6 +84,7 @@ app.include_router(reports_router)
 app.include_router(backtest_router)
 app.include_router(settings_router)
 app.include_router(auth_router)
+app.include_router(margin_router, prefix="/api/margin", tags=["margin"])
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")

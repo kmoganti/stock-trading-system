@@ -316,23 +316,33 @@ class DataFetcher:
             return None
     
     async def calculate_required_margin(self, symbol: str, quantity: int, 
-                                      transaction_type: str, price: Optional[float] = None) -> Optional[float]:
-        """Calculate required margin for a trade"""
+                                      transaction_type: str, price: Optional[float] = None,
+                                      product: str = "NORMAL", exchange: str = "NSEEQ") -> Optional[Dict]:
+        """Calculate required margin for a trade using IIFL preordermargin API"""
         try:
             order_data = self.iifl.format_order_data(
                 symbol=symbol,
                 transaction_type=transaction_type,
                 quantity=quantity,
                 order_type="LIMIT" if price else "MARKET",
-                price=price
+                price=price,
+                product=product,
+                exchange=exchange
             )
             
             result = await self.iifl.calculate_pre_order_margin(order_data)
             
             if result and result.get("status") == "Ok":
-                margin_data = result.get("resultData")
+                margin_data = result.get("result")
                 if margin_data:
-                    return float(margin_data.get("totalMargin", 0))
+                    return {
+                        "total_cash_available": float(margin_data.get("totalCashAvailable", 0)),
+                        "pre_order_margin": float(margin_data.get("preOrderMargin", 0)),
+                        "post_order_margin": float(margin_data.get("postOrderMargin", 0)),
+                        "current_order_margin": float(margin_data.get("currentOrderMargin", 0)),
+                        "rms_validation": margin_data.get("rmsValidationCheck", ""),
+                        "fund_short": float(margin_data.get("fundShort", 0))
+                    }
             elif result:
                 logger.warning(f"Failed to calculate margin for {symbol}: {result.get('emsg', 'Unknown API error')}")
             

@@ -377,7 +377,7 @@ class IIFLAPIService:
     
     # Margin Calculations
     async def calculate_pre_order_margin(self, order_data: Dict) -> Optional[Dict]:
-        """Calculate required margin for an order"""
+        """Calculate pre-order margin requirement using IIFL preordermargin endpoint"""
         return await self._make_api_request("POST", "/preordermargin", order_data)
     
     async def calculate_span_exposure(self, instruments: List[Dict]) -> Optional[Dict]:
@@ -427,26 +427,34 @@ class IIFLAPIService:
     # Utility methods
     def format_order_data(self, symbol: str, transaction_type: str, quantity: int, 
                          order_type: str = "MARKET", price: Optional[float] = None,
+                         product: str = "NORMAL", exchange: str = "NSEEQ",
                          stop_loss: Optional[float] = None, take_profit: Optional[float] = None) -> Dict:
-        """Format order data for IIFL API"""
+        """Format order data for IIFL API margin calculation"""
         order_data = {
             "instrumentId": symbol,
-            "exchange": "NSE",  # Default to NSE
+            "exchange": exchange,  # NSEEQ, NSEFO, BSEEQ, etc.
             "transactionType": transaction_type.upper(),  # BUY/SELL
-            "quantity": quantity,
-            "orderComplexity": "REGULAR",
-            "product": "MIS",  # Intraday
-            "orderType": order_type.upper(),
+            "quantity": str(quantity),  # String format as per API spec
+            "orderComplexity": "REGULAR",  # REGULAR, AMO, BO, CO
+            "product": product.upper(),  # NORMAL, INTRADAY, DELIVERY, BNPL
+            "orderType": order_type.upper(),  # LIMIT, MARKET, SL, SLM
+            "validity": "DAY"  # Required field
         }
         
-        if price and order_type.upper() in ["LIMIT", "STOP_LIMIT"]:
-            order_data["price"] = price
+        # Add price for LIMIT and SL orders
+        if price and order_type.upper() in ["LIMIT", "SL"]:
+            order_data["price"] = str(price)
         
-        if stop_loss:
-            order_data["stopLoss"] = stop_loss
+        # Add stop loss trigger price for SL and SLM orders
+        if stop_loss and order_type.upper() in ["SL", "SLM"]:
+            order_data["slTriggerPrice"] = str(stop_loss)
             
-        if take_profit:
-            order_data["takeProfit"] = take_profit
+        # Add bracket order legs if specified
+        if order_data["orderComplexity"] in ["BO", "CO"]:
+            if stop_loss:
+                order_data["slLegPrice"] = str(stop_loss)
+            if take_profit:
+                order_data["targetLegPrice"] = str(take_profit)
         
         return order_data
     
