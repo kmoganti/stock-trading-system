@@ -49,8 +49,13 @@ class DataFetcher:
             if cached_data is not None:
                 return cached_data
             
+            # Calculate date range
+            from datetime import datetime, timedelta
+            to_date = datetime.now().strftime("%Y-%m-%d")
+            from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            
             # Fetch from IIFL API
-            result = await self.iifl.get_historical_data(symbol, interval, days)
+            result = await self.iifl.get_historical_data(symbol, interval, from_date, to_date)
             
             if result and result.get("status") == "Ok":
                 data = result.get("resultData", [])
