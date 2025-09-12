@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List
+from typing import List, Optional
 from models.database import get_db
 from services.watchlist import WatchlistService
 from pydantic import BaseModel
@@ -11,16 +11,18 @@ logger = logging.getLogger(__name__)
 
 class WatchlistUpdate(BaseModel):
     symbols: List[str]
+    category: Optional[str] = None
 
 @router.get("", response_model=List[str])
 async def get_watchlist(
     active_only: bool = True,
+    category: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
 ):
     """Get all symbols in the watchlist"""
     try:
         service = WatchlistService(db)
-        return await service.get_watchlist(active_only=active_only)
+        return await service.get_watchlist(active_only=active_only, category=category)
     except Exception as e:
         logger.error(f"Error getting watchlist: {str(e)}")
         raise HTTPException(status_code=500, detail="Error retrieving watchlist")
@@ -36,8 +38,8 @@ async def add_to_watchlist(
             raise HTTPException(status_code=400, detail="No symbols provided")
             
         service = WatchlistService(db)
-        await service.add_symbols(update.symbols)
-        return {"message": f"Successfully added {len(update.symbols)} symbols to watchlist"}
+        await service.add_symbols(update.symbols, category=update.category)
+        return {"message": f"Successfully added {len(update.symbols)} symbols to watchlist", "category": update.category or "short_term"}
     except HTTPException:
         raise
     except Exception as e:
@@ -55,8 +57,29 @@ async def remove_from_watchlist(
             raise HTTPException(status_code=400, detail="No symbols provided")
             
         service = WatchlistService(db)
-        await service.remove_symbols(update.symbols)
-        return {"message": f"Successfully removed {len(update.symbols)} symbols from watchlist"}
+        await service.remove_symbols(update.symbols, category=update.category)
+        return {"message": f"Successfully removed {len(update.symbols)} symbols from watchlist", "category": update.category}
+
+@router.put("/category")
+async def change_symbol_category(
+    symbol: str,
+    category: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Change the category of a symbol (and activate it)."""
+    try:
+        if not symbol or not category:
+            raise HTTPException(status_code=400, detail="Symbol and category are required")
+        if category not in {"long_term", "short_term", "day_trading"}:
+            raise HTTPException(status_code=400, detail="Invalid category")
+        service = WatchlistService(db)
+        await service.set_category(symbol, category)
+        return {"message": f"Updated {symbol.upper()} to category {category}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error changing symbol category: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error updating category")
     except HTTPException:
         raise
     except Exception as e:

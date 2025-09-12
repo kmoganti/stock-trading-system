@@ -15,6 +15,7 @@ from api import (
     risk_router, reports_router, backtest_router, settings_router
 )
 from api.auth_management import router as auth_router
+from api.watchlist import router as watchlist_router
 
 # Create test app
 app = FastAPI()
@@ -26,6 +27,7 @@ app.include_router(reports_router)
 app.include_router(backtest_router)
 app.include_router(settings_router)
 app.include_router(auth_router)
+app.include_router(watchlist_router)
 
 client = TestClient(app)
 
@@ -387,6 +389,56 @@ class TestAuthAPI:
             data = response.json()
             assert data["success"] is True
             assert "token" in data
+
+class TestWatchlistAPI:
+    """Test watchlist API endpoints with categories"""
+
+    def test_get_watchlist_default(self):
+        """Test get watchlist without category (should work)"""
+        with patch('services.watchlist.WatchlistService.get_watchlist') as mock_get:
+            mock_get.return_value = ["RELIANCE", "TCS"]
+            response = client.get("/api/watchlist")
+            assert response.status_code == 200
+            data = response.json()
+            assert isinstance(data, list)
+
+    def test_get_watchlist_by_category(self):
+        """Test get watchlist filtered by category"""
+        with patch('services.watchlist.WatchlistService.get_watchlist') as mock_get:
+            mock_get.return_value = ["RELIANCE", "TCS"]
+            response = client.get("/api/watchlist?category=long_term")
+            assert response.status_code == 200
+            data = response.json()
+            assert len(data) == 2
+
+    def test_add_symbols_with_category(self):
+        """Test adding symbols with a category"""
+        with patch('services.watchlist.WatchlistService.add_symbols') as mock_add:
+            mock_add.return_value = None
+            payload = {"symbols": ["RELIANCE", "TCS"], "category": "day_trading"}
+            response = client.post("/api/watchlist", json=payload)
+            assert response.status_code == 200
+            data = response.json()
+            assert data["category"] == "day_trading"
+
+    def test_remove_symbols_with_category(self):
+        """Test removing symbols with a category"""
+        with patch('services.watchlist.WatchlistService.remove_symbols') as mock_remove:
+            mock_remove.return_value = None
+            payload = {"symbols": ["RELIANCE"], "category": "short_term"}
+            response = client.delete("/api/watchlist", json=payload)
+            assert response.status_code == 200
+            data = response.json()
+            assert data["category"] == "short_term"
+
+    def test_change_symbol_category(self):
+        """Test changing symbol category"""
+        with patch('services.watchlist.WatchlistService.set_category') as mock_set:
+            mock_set.return_value = None
+            response = client.put("/api/watchlist/category", params={"symbol": "RELIANCE", "category": "long_term"})
+            assert response.status_code == 200
+            data = response.json()
+            assert "Updated RELIANCE to category long_term" in data["message"]
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

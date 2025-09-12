@@ -114,6 +114,11 @@ async def settings_page(request: Request):
     """Settings configuration page"""
     return templates.TemplateResponse("settings.html", {"request": request})
 
+@app.get("/watchlist")
+async def watchlist_page(request: Request):
+    """Watchlist management page"""
+    return templates.TemplateResponse("watchlist.html", {"request": request})
+
 @app.get("/auth")
 async def auth_management_page(request: Request):
     """IIFL Authentication management page"""

@@ -12,6 +12,7 @@ sys.path.insert(0, str(project_root))
 from models.database import get_db, init_db, close_db
 from models.signals import Signal, SignalStatus, SignalType
 from models.settings import Settings
+from models.watchlist import WatchlistCategory
 from models.risk_events import RiskEvent, RiskEventType
 from models.pnl_reports import PnLReport
 
@@ -346,6 +347,14 @@ class TestModelRelationships:
         assert settings.auto_trade is False  # Manual approval required
         assert settings.max_positions == 5   # Position limit check needed
         assert settings.risk_per_trade == 0.02  # Risk calculation needed
+
+class TestWatchlistModel:
+    """Test Watchlist category enum values"""
+
+    def test_watchlist_category_values(self):
+        assert WatchlistCategory.LONG_TERM.value == "long_term"
+        assert WatchlistCategory.SHORT_TERM.value == "short_term"
+        assert WatchlistCategory.DAY_TRADING.value == "day_trading"
 
 class TestModelSerialization:
     """Test model serialization and deserialization"""
