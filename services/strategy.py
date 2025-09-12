@@ -60,7 +60,7 @@ class StrategyService:
         self.db = db
         self.settings = get_settings()
         self.watchlist_service = WatchlistService(db)
-        self._watchlist = []  # Will be populated on first access
+        self._watchlist_by_category: Dict[Optional[str], List[str]] = {}
     
     def calculate_indicators(self, df) -> Dict:
         """Calculate technical indicators for the dataframe"""
@@ -423,19 +423,20 @@ class StrategyService:
     
     async def get_watchlist(self, category: Optional[str] = None) -> List[str]:
         """Get the current watchlist, optionally by category"""
-        if not self._watchlist:
-            self._watchlist = await self.watchlist_service.get_watchlist(category=category)
-        return self._watchlist
+        if category not in self._watchlist_by_category:
+            self._watchlist_by_category[category] = await self.watchlist_service.get_watchlist(category=category)
+        return self._watchlist_by_category[category]
 
     async def update_watchlist(self, symbols: List[str], category: Optional[str] = None) -> None:
         """Update the watchlist with new symbols"""
         await self.watchlist_service.add_symbols(symbols, category=category)
-        self._watchlist = await self.watchlist_service.get_watchlist(category=category)
+        self._watchlist_by_category[category] = await self.watchlist_service.get_watchlist(category=category)
 
     async def remove_from_watchlist(self, symbols: List[str], category: Optional[str] = None) -> None:
         """Remove symbols from the watchlist"""
         await self.watchlist_service.remove_symbols(symbols, category=category)
-        self._watchlist = [s for s in self._watchlist if s not in [sym.upper() for sym in symbols]]
+        if category in self._watchlist_by_category:
+            self._watchlist_by_category[category] = [s for s in self._watchlist_by_category[category] if s not in [sym.upper() for sym in symbols]]
 
     async def generate_signals(self, symbol: str) -> List[TradingSignal]:
         """Generate trading signals for a symbol"""

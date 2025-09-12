@@ -314,6 +314,25 @@ class DataFetcher:
             elif result:
                 logger.warning(f"Failed to fetch margin info: {result.get('emsg', 'Unknown API error')}")
             
+            # Fallback: derive available margin via pre-order margin endpoint with minimal dummy order
+            try:
+                fallback = await self.calculate_required_margin(
+                    symbol="RELIANCE", quantity=1, transaction_type="BUY", price=None, product="NORMAL", exchange="NSEEQ"
+                )
+                if fallback:
+                    # Normalize to expected keys so UI can read availableMargin/usedMargin
+                    derived = {
+                        "availableMargin": fallback.get("total_cash_available", 0.0),
+                        "usedMargin": fallback.get("current_order_margin", 0.0),
+                        "preOrderMargin": fallback.get("pre_order_margin", 0.0),
+                        "postOrderMargin": fallback.get("post_order_margin", 0.0),
+                        "fundShort": fallback.get("fund_short", 0.0),
+                    }
+                    self._set_cache(cache_key, derived, 30)
+                    return derived
+            except Exception as e:
+                logger.warning(f"Fallback preordermargin failed: {str(e)}")
+            
             return None
             
         except Exception as e:

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 from models.database import get_db
-from services.watchlist import WatchlistService
+from services.watchlist import WatchlistService, NIFTY_100_SYMBOLS
 from pydantic import BaseModel
 import logging
 
@@ -85,3 +85,21 @@ async def change_symbol_category(
     except Exception as e:
         logger.error(f"Error changing symbol category: {str(e)}")
         raise HTTPException(status_code=500, detail="Error updating category")
+
+@router.post("/refresh/nifty100")
+async def refresh_nifty100_watchlist(
+    category: str = "day_trading",
+    db: AsyncSession = Depends(get_db)
+):
+    """Populate the watchlist with Nifty 100 symbols for intraday/day trading."""
+    try:
+        if category not in {"long_term", "short_term", "day_trading"}:
+            raise HTTPException(status_code=400, detail="Invalid category")
+        service = WatchlistService(db)
+        await service.add_symbols(NIFTY_100_SYMBOLS, category=category)
+        return {"message": f"Nifty 100 symbols added to {category}", "count": len(NIFTY_100_SYMBOLS)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error refreshing Nifty 100 watchlist: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error refreshing watchlist")

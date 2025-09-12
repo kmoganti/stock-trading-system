@@ -6,6 +6,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Static Nifty 100 list (tickers normalized to NSEEQ names without -EQ)
+NIFTY_100_SYMBOLS: List[str] = [
+    # Sample subset; expand to full list as needed
+    "RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","ITC","LT",
+    "HINDUNILVR","BAJFINANCE","BHARTIARTL","ASIANPAINT","KOTAKBANK","AXISBANK",
+    "ULTRACEMCO","MARUTI","SUNPHARMA","TITAN","HCLTECH","TECHM","WIPRO","NESTLEIND",
+]
+
 class WatchlistService:
     """Service for managing watchlist items"""
     
