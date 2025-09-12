@@ -21,6 +21,7 @@ def upgrade():
         'watchlist',
         sa.Column('id', sa.Integer(), nullable=False, primary_key=True, index=True),
         sa.Column('symbol', sa.String(length=50), nullable=False, index=True),
+        sa.Column('category', sa.String(length=20), nullable=False, server_default='short_term', index=True),
         sa.Column('is_active', sa.Boolean(), nullable=False, default=True, index=True),
         sa.Column('created_at', sa.DateTime(), nullable=False, server_default=sa.text('now()')),
         sa.Column('updated_at', sa.DateTime(), nullable=False, server_default=sa.text('now()'), onupdate=sa.text('now()')),
@@ -35,11 +36,12 @@ def upgrade():
     op.bulk_insert(
         sa.table('watchlist',
             sa.column('symbol', sa.String),
+            sa.column('category', sa.String),
             sa.column('is_active', sa.Boolean),
             sa.column('created_at', sa.DateTime),
             sa.column('updated_at', sa.DateTime)
         ),
-        [{'symbol': sym, 'is_active': True} for sym in initial_symbols]
+        [{'symbol': sym, 'category': 'short_term', 'is_active': True} for sym in initial_symbols]
     )
 
 def downgrade():
