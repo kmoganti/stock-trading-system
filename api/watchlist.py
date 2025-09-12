@@ -59,6 +59,11 @@ async def remove_from_watchlist(
         service = WatchlistService(db)
         await service.remove_symbols(update.symbols, category=update.category)
         return {"message": f"Successfully removed {len(update.symbols)} symbols from watchlist", "category": update.category}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error removing from watchlist: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error updating watchlist")
 
 @router.put("/category")
 async def change_symbol_category(
@@ -80,8 +85,3 @@ async def change_symbol_category(
     except Exception as e:
         logger.error(f"Error changing symbol category: {str(e)}")
         raise HTTPException(status_code=500, detail="Error updating category")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error removing from watchlist: {str(e)}")
-        raise HTTPException(status_code=500, detail="Error updating watchlist")
