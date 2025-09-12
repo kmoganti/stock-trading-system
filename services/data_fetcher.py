@@ -304,17 +304,7 @@ class DataFetcher:
             if self._is_cache_valid(cache_key, 60):  # 1 min cache
                 return self.cache[cache_key]
             
-            result = await self.iifl.get_limits()
-            
-            if result and result.get("status") == "Ok":
-                margin_data = result.get("result")
-                if margin_data:
-                    self._set_cache(cache_key, margin_data, 60)
-                    return margin_data
-            elif result:
-                logger.warning(f"Failed to fetch margin info: {result.get('emsg', 'Unknown API error')}")
-            
-            # Fallback: derive available margin via pre-order margin endpoint with minimal dummy order
+            # Derive available margin via pre-order margin endpoint with minimal dummy order
             try:
                 fallback = await self.calculate_required_margin(
                     symbol="RELIANCE", quantity=1, transaction_type="BUY", price=None, product="NORMAL", exchange="NSEEQ"

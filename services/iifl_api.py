@@ -346,9 +346,7 @@ class IIFLAPIService:
         """Get user profile information"""
         return await self._make_api_request("GET", "/profile")
     
-    async def get_limits(self) -> Optional[Dict]:
-        """Get trading limits and margin information"""
-        return await self._make_api_request("GET", "/limits")
+    # Removed: get_limits (IIFL does not offer /limits). Use calculate_pre_order_margin via DataFetcher.
     
     # Order Management
     async def place_order(self, order_data: Dict) -> Optional[Dict]:
