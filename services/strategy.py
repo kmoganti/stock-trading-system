@@ -1,7 +1,9 @@
 from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime, timedelta
 import logging
+from sqlalchemy.ext.asyncio import AsyncSession
 from .data_fetcher import DataFetcher
+from .watchlist import WatchlistService
 from models.signals import Signal, SignalType, SignalStatus
 from config.settings import get_settings
 from dataclasses import dataclass
@@ -53,10 +55,12 @@ class TradingSignal:
 class StrategyService:
     """Core trading strategy service with multiple algorithms"""
     
-    def __init__(self, data_fetcher: DataFetcher):
+    def __init__(self, data_fetcher: DataFetcher, db: AsyncSession):
         self.data_fetcher = data_fetcher
+        self.db = db
         self.settings = get_settings()
-        self.watchlist = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN", "ITC", "LT", "HINDUNILVR", "BAJFINANCE"]
+        self.watchlist_service = WatchlistService(db)
+        self._watchlist = []  # Will be populated on first access
     
     def calculate_indicators(self, df) -> Dict:
         """Calculate technical indicators for the dataframe"""
@@ -417,6 +421,22 @@ class StrategyService:
             logger.error(f"Error validating signal for {signal.symbol}: {str(e)}")
             return False
     
+    async def get_watchlist(self) -> List[str]:
+        """Get the current watchlist"""
+        if not self._watchlist:
+            self._watchlist = await self.watchlist_service.get_watchlist()
+        return self._watchlist
+
+    async def update_watchlist(self, symbols: List[str]) -> None:
+        """Update the watchlist with new symbols"""
+        await self.watchlist_service.add_symbols(symbols)
+        self._watchlist = await self.watchlist_service.get_watchlist()
+
+    async def remove_from_watchlist(self, symbols: List[str]) -> None:
+        """Remove symbols from the watchlist"""
+        await self.watchlist_service.remove_symbols(symbols)
+        self._watchlist = [s for s in self._watchlist if s not in [sym.upper() for sym in symbols]]
+
     async def generate_signals(self, symbol: str) -> List[TradingSignal]:
         """Generate trading signals for a symbol"""
         try:
