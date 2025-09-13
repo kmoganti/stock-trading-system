@@ -16,10 +16,10 @@ logger = logging.getLogger(__name__)
 
 async def get_order_manager(db: AsyncSession = Depends(get_db)) -> OrderManager:
     """Dependency to get OrderManager instance"""
-    async with IIFLAPIService() as iifl:
-        data_fetcher = DataFetcher(iifl, db_session=db)
-        risk_service = RiskService(data_fetcher, db)
-        return OrderManager(iifl, risk_service, data_fetcher, db)
+    iifl = IIFLAPIService()
+    data_fetcher = DataFetcher(iifl, db_session=db)
+    risk_service = RiskService(data_fetcher, db)
+    return OrderManager(iifl, risk_service, data_fetcher, db)
 
 @router.get("")
 async def get_signals(
@@ -53,10 +53,10 @@ async def generate_intraday_signals(
 ) -> Dict[str, Any]:
     """Generate intraday signals for all symbols in the given watchlist category."""
     try:
-        async with IIFLAPIService() as iifl:
-            data_fetcher = DataFetcher(iifl, db_session=db)
-            strategy = StrategyService(data_fetcher, db)
-            symbols = await strategy.get_watchlist(category=category)
+        iifl = IIFLAPIService()
+        data_fetcher = DataFetcher(iifl, db_session=db)
+        strategy = StrategyService(data_fetcher, db)
+        symbols = await strategy.get_watchlist(category=category)
             generated: List[Dict[str, Any]] = []
             for symbol in symbols:
                 sigs = await strategy.generate_signals(symbol)

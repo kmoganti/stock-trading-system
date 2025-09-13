@@ -268,10 +268,10 @@ class DataFetcher:
                         symbols = [h.get("symbol") for h in processed_holdings if h.get("symbol")]
                         if symbols:
                             service = WatchlistService(self._db)
-                            await service.mark_holdings_as_hold(symbols)
-                except Exception:
-                    # Non-fatal if marking fails
-                    pass
+                            affected = await service.mark_holdings_as_hold(symbols)
+                            logger.info(f"Marked {affected} holding symbols as 'hold' in watchlist")
+                except Exception as e:
+                    logger.warning(f"Failed to mark holdings as 'hold' in watchlist: {str(e)}")
 
             elif isinstance(holdings_result, dict):
                 error_msg = holdings_result.get("emsg", holdings_result.get("message", "Unknown error"))

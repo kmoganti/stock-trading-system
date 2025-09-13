@@ -122,9 +122,16 @@ async def refresh_watchlist_from_csv(
     - deactivate_missing: deactivates symbols in the category not present in CSV
     """
     try:
+        # Constrain CSV path to data/ folder
+        from pathlib import Path
+        base = Path("data").resolve()
+        candidate = Path(file_path).resolve()
+        if not str(candidate).startswith(str(base)):
+            raise HTTPException(status_code=400, detail="File path must be under data/ directory")
+
         service = WatchlistService(db)
         result = await service.refresh_from_csv(
-            file_path=file_path,
+            file_path=str(candidate),
             category=category,
             deactivate_missing=deactivate_missing,
         )
