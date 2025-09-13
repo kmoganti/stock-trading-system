@@ -6,15 +6,17 @@ from datetime import datetime
 import logging
 from models.database import get_db
 from services.iifl_api import IIFLAPIService
+from models.database import get_db
 from services.data_fetcher import DataFetcher
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 logger = logging.getLogger(__name__)
 
-async def get_data_fetcher() -> DataFetcher:
+async def get_data_fetcher(db: AsyncSession = Depends(get_db)) -> DataFetcher:
     """Dependency to get DataFetcher instance"""
     async with IIFLAPIService() as iifl:
-        return DataFetcher(iifl)
+        # Pass DB to allow marking holdings as 'hold' in watchlist
+        return DataFetcher(iifl, db_session=db)
 
 @router.get("/positions")
 async def get_positions(
