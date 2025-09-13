@@ -75,8 +75,8 @@ async def change_symbol_category(
     try:
         if not symbol or not category:
             raise HTTPException(status_code=400, detail="Symbol and category are required")
-        if category not in {"long_term", "short_term", "day_trading"}:
-            raise HTTPException(status_code=400, detail="Invalid category")
+        if category not in {"long_term", "short_term", "day_trading", "hold"}:
+            raise HTTPException(status_code=400, detail="Invalid category. Must be one of: long_term, short_term, day_trading, hold")
         service = WatchlistService(db)
         await service.set_category(symbol, category)
         return {"message": f"Updated {symbol.upper()} to category {category}"}
