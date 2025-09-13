@@ -2,7 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 from models.database import get_db
-from services.watchlist import WatchlistService, NIFTY_100_SYMBOLS
+from services.watchlist import WatchlistService
+# from services.portfolio import PortfolioService # TODO: Uncomment when PortfolioService is available
+from services.watchlist import _load_symbols_from_csv
 from pydantic import BaseModel
 import logging
 
@@ -91,15 +93,31 @@ async def refresh_nifty100_watchlist(
     category: str = "day_trading",
     db: AsyncSession = Depends(get_db)
 ):
-    """Populate the watchlist with Nifty 100 symbols for intraday/day trading."""
+    """
+    Populate the watchlist with Nifty 100 symbols from the CSV file.
+    Symbols that are current holdings will be marked as 'hold'.
+    """
     try:
-        if category not in {"long_term", "short_term", "day_trading"}:
-            raise HTTPException(status_code=400, detail="Invalid category")
+        if category not in {"long_term", "short_term", "day_trading", "hold"}:
+            raise HTTPException(status_code=400, detail="Invalid category. Must be one of: long_term, short_term, day_trading, hold")
+        
+        # 1. Load Nifty 100 symbols from CSV
+        nifty100_symbols = _load_symbols_from_csv('data/ind_nifty100list.csv', 'Symbol')
+        if not nifty100_symbols:
+            raise HTTPException(status_code=500, detail="Could not load Nifty 100 symbols from CSV file.")
+
+        # 2. Get current holdings
+        # portfolio_service = PortfolioService(db) # TODO: Instantiate your portfolio service
+        # holding_symbols = await portfolio_service.get_holding_symbols()
+        holding_symbols = ["RELIANCE", "TCS"] # Placeholder: Replace with actual holdings fetch
+
+        # 3. Refresh watchlist with new logic
         service = WatchlistService(db)
-        await service.add_symbols(NIFTY_100_SYMBOLS, category=category)
-        return {"message": f"Nifty 100 symbols added to {category}", "count": len(NIFTY_100_SYMBOLS)}
+        count = await service.refresh_index_symbols(nifty100_symbols, holding_symbols, category)
+        return {"message": f"Refreshed watchlist with {count} Nifty 100 symbols.", "count": count}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error refreshing Nifty 100 watchlist: {str(e)}")
         raise HTTPException(status_code=500, detail="Error refreshing watchlist")
+
