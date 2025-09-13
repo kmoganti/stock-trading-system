@@ -103,3 +103,30 @@ async def refresh_nifty100_watchlist(
     except Exception as e:
         logger.error(f"Error refreshing Nifty 100 watchlist: {str(e)}")
         raise HTTPException(status_code=500, detail="Error refreshing watchlist")
+
+@router.post("/refresh/csv")
+async def refresh_watchlist_from_csv(
+    file_path: str = "data/ind_nifty100list.csv",
+    category: Optional[str] = None,
+    deactivate_missing: bool = True,
+    db: AsyncSession = Depends(get_db)
+):
+    """Refresh the watchlist from a CSV file placed under data/.
+
+    - file_path: path to CSV file (default: data/ind_nifty100list.csv)
+    - category: override category for all symbols (default: short_term)
+    - deactivate_missing: deactivates symbols in the category not present in CSV
+    """
+    try:
+        service = WatchlistService(db)
+        result = await service.refresh_from_csv(
+            file_path=file_path,
+            category=category,
+            deactivate_missing=deactivate_missing,
+        )
+        return {"message": "Watchlist refreshed from CSV", **result}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error refreshing watchlist from CSV: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error refreshing watchlist from CSV")

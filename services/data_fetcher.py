@@ -3,6 +3,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 import logging
 from .iifl_api import IIFLAPIService
+from .watchlist import WatchlistService
 
 # Optional pandas import
 try:
@@ -16,8 +17,9 @@ logger = logging.getLogger(__name__)
 class DataFetcher:
     """Service for fetching and processing market data"""
     
-    def __init__(self, iifl_service: IIFLAPIService):
+    def __init__(self, iifl_service: IIFLAPIService, db_session=None):
         self.iifl = iifl_service
+        self._db = db_session
         self.cache: Dict[str, Any] = {}
         self.cache_expiry: Dict[str, datetime] = {}
     
@@ -260,6 +262,17 @@ class DataFetcher:
                     portfolio_data["total_invested"] += holding.get("invested_value", 0)
                     portfolio_data["total_pnl"] += holding.get("pnl", 0)
                     
+                # Mark all holding symbols as 'hold' in watchlist if DB is available
+                try:
+                    if self._db and processed_holdings:
+                        symbols = [h.get("symbol") for h in processed_holdings if h.get("symbol")]
+                        if symbols:
+                            service = WatchlistService(self._db)
+                            await service.mark_holdings_as_hold(symbols)
+                except Exception:
+                    # Non-fatal if marking fails
+                    pass
+
             elif isinstance(holdings_result, dict):
                 error_msg = holdings_result.get("emsg", holdings_result.get("message", "Unknown error"))
                 logger.warning(f"Could not fetch holdings from IIFL API: {error_msg}")

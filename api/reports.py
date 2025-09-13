@@ -19,13 +19,13 @@ logger = logging.getLogger(__name__)
 async def get_pnl_service(db: AsyncSession = Depends(get_db)) -> PnLService:
     """Dependency to get PnLService instance"""
     async with IIFLAPIService() as iifl:
-        data_fetcher = DataFetcher(iifl)
+        data_fetcher = DataFetcher(iifl, db_session=db)
         return PnLService(data_fetcher, db)
 
 async def get_report_service(db: AsyncSession = Depends(get_db)) -> ReportService:
     """Dependency to get ReportService instance"""
     async with IIFLAPIService() as iifl:
-        data_fetcher = DataFetcher(iifl)
+        data_fetcher = DataFetcher(iifl, db_session=db)
         pnl_service = PnLService(data_fetcher, db)
         return ReportService(pnl_service, data_fetcher, db)
 
