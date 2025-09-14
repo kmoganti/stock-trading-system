@@ -85,19 +85,17 @@ class TelegramBot:
             margin_required = signal.get('margin_required', 0)
             expiry_time = signal.get('expiry_time', 'N/A')
             
-            message = f"""
-🔔 **New Trading Signal**
-
-📈 **Symbol:** {symbol}
-📊 **Type:** {signal_type.upper()}
-💡 **Reason:** {reason}
-🛑 **Stop Loss:** {stop_loss}
-🎯 **Take Profit:** {take_profit}
-💰 **Margin Required:** ₹{margin_required:,.2f}
-⏰ **Expires:** {expiry_time}
-
-Please approve or reject this signal:
-            """
+            message = (
+                f"🔔 <b>New Trading Signal</b>\n\n"
+                f"📈 <b>Symbol:</b> {symbol}\n"
+                f"📊 <b>Type:</b> {signal_type.upper()}\n"
+                f"💡 <b>Reason:</b> {reason}\n"
+                f"🛑 <b>Stop Loss:</b> {stop_loss}\n"
+                f"🎯 <b>Take Profit:</b> {take_profit}\n"
+                f"💰 <b>Margin Required:</b> ₹{margin_required:,.2f}\n"
+                f"⏰ <b>Expires:</b> {expiry_time}\n\n"
+                f"Please approve or reject this signal:"
+            )
             
             # Create inline keyboard
             keyboard = [
@@ -112,7 +110,7 @@ Please approve or reject this signal:
                 chat_id=self.chat_id,
                 text=message,
                 reply_markup=reply_markup,
-                parse_mode='Markdown'
+                parse_mode='HTML'
             )
             
             logger.info(f"Signal notification sent for signal {signal_id}")
@@ -128,22 +126,20 @@ Please approve or reject this signal:
             quantity = signal.get('quantity', 'N/A')
             price = signal.get('price', 'N/A')
             
-            message = f"""
-✅ *Order Executed*
-
-📈 *Symbol:* {symbol}
-📊 *Type:* {signal_type.upper()}
-📦 *Quantity:* {quantity}
-💵 *Price:* ₹{price}
-🆔 *Order ID:* {order_id}
-
-Order has been successfully placed with the broker.
-            """
+            message = (
+                "✅ <b>Order Executed</b>\n\n"
+                f"📈 <b>Symbol:</b> {symbol}\n"
+                f"📊 <b>Type:</b> {signal_type.upper()}\n"
+                f"📦 <b>Quantity:</b> {quantity}\n"
+                f"💵 <b>Price:</b> ₹{price}\n"
+                f"🆔 <b>Order ID:</b> {order_id}\n\n"
+                "Order has been successfully placed with the broker."
+            )
             
             await self.bot.send_message(
                 chat_id=self.chat_id,
                 text=message,
-                parse_mode='Markdown'
+                parse_mode='HTML'
             )
             
             logger.info(f"Execution confirmation sent for order {order_id}")
@@ -163,20 +159,18 @@ Order has been successfully placed with the broker.
             
             emoji = emoji_map.get(severity, "⚠️")
             
-            alert_message = f"""
-{emoji} **Risk Alert**
-
-**Type:** {alert_type}
-**Severity:** {severity.upper()}
-**Message:** {message}
-
-Please review your positions and risk parameters.
-            """
+            alert_message = (
+                f"{emoji} <b>Risk Alert</b>\n\n"
+                f"<b>Type:</b> {alert_type}\n"
+                f"<b>Severity:</b> {severity.upper()}\n"
+                f"<b>Message:</b> {message}\n\n"
+                "Please review your positions and risk parameters."
+            )
             
             await self.bot.send_message(
                 chat_id=self.chat_id,
                 text=alert_message,
-                parse_mode='Markdown'
+                parse_mode='HTML'
             )
             
             logger.info(f"Risk alert sent: {alert_type}")
@@ -191,20 +185,18 @@ Please review your positions and risk parameters.
             signal_type = signal['signal_type']
             signal_id = signal['id']
             
-            message = f"""
-⏰ **Signal Expired**
-
-📈 **Symbol:** {symbol}
-📊 **Type:** {signal_type.upper()}
-🆔 **Signal ID:** {signal_id}
-
-Signal has expired without approval.
-            """
+            message = (
+                "⏰ <b>Signal Expired</b>\n\n"
+                f"📈 <b>Symbol:</b> {symbol}\n"
+                f"📊 <b>Type:</b> {signal_type.upper()}\n"
+                f"🆔 <b>Signal ID:</b> {signal_id}\n\n"
+                "Signal has expired without approval."
+            )
             
             await self.bot.send_message(
                 chat_id=self.chat_id,
                 text=message,
-                parse_mode='Markdown'
+                parse_mode='HTML'
             )
             
         except Exception as e:
@@ -212,22 +204,18 @@ Signal has expired without approval.
     
     async def _start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
-        welcome_message = """
-🤖 **Stock Trading System Bot**
-
-Welcome! This bot will send you trading signals and system notifications.
-
-**Available Commands:**
-/status - System status
-/positions - Current positions
-/pnl - Profit & Loss summary
-/halt - Emergency halt trading
-/resume - Resume trading
-
-The bot will automatically send you signals for approval.
-        """
-        
-        await update.message.reply_text(welcome_message, parse_mode='Markdown')
+        welcome_message = (
+            "🤖 <b>Stock Trading System Bot</b>\n\n"
+            "Welcome! This bot will send you trading signals and system notifications.\n\n"
+            "<b>Available Commands:</b>\n"
+            "/status - System status\n"
+            "/positions - Current positions\n"
+            "/pnl - Profit & Loss summary\n"
+            "/halt - Emergency halt trading\n"
+            "/resume - Resume trading\n\n"
+            "The bot will automatically send you signals for approval."
+        )
+        await update.message.reply_text(welcome_message, parse_mode='HTML')
     
     async def _status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command"""
@@ -238,20 +226,19 @@ The bot will automatically send you signals for approval.
                 if response.status_code == 200:
                     data = response.json()
                     
-                    message = f"""
-📊 **System Status**
-
-🔄 **Auto Trade:** {'✅ Enabled' if data.get('auto_trade') else '❌ Disabled'}
-🔗 **IIFL API:** {'✅ Connected' if data.get('iifl_api_connected') else '❌ Disconnected'}
-💾 **Database:** {'✅ Connected' if data.get('database_connected') else '❌ Disconnected'}
-📈 **Max Positions:** {data.get('max_positions', 'N/A')}
-⚠️ **Risk Per Trade:** {data.get('risk_per_trade', 0):.1%}
-🛑 **Max Daily Loss:** {data.get('max_daily_loss', 0):.1%}
-                    """
+                    message = (
+                        "📊 <b>System Status</b>\n\n"
+                        f"🔄 <b>Auto Trade:</b> {'✅ Enabled' if data.get('auto_trade') else '❌ Disabled'}\n"
+                        f"🔗 <b>IIFL API:</b> {'✅ Connected' if data.get('iifl_api_connected') else '❌ Disconnected'}\n"
+                        f"💾 <b>Database:</b> {'✅ Connected' if data.get('database_connected') else '❌ Disconnected'}\n"
+                        f"📈 <b>Max Positions:</b> {data.get('max_positions', 'N/A')}\n"
+                        f"⚠️ <b>Risk Per Trade:</b> {data.get('risk_per_trade', 0):.1%}\n"
+                        f"🛑 <b>Max Daily Loss:</b> {data.get('max_daily_loss', 0):.1%}"
+                    )
                 else:
                     message = "❌ Unable to fetch system status"
             
-            await update.message.reply_text(message, parse_mode='Markdown')
+            await update.message.reply_text(message, parse_mode='HTML')
             
         except Exception as e:
             await update.message.reply_text(f"Error fetching status: {str(e)}")
@@ -268,19 +255,19 @@ The bot will automatically send you signals for approval.
                     total_pnl = data.get('total_pnl', 0)
                     
                     if positions:
-                        message = f"📈 **Current Positions** (Total PnL: ₹{total_pnl:,.2f})\n\n"
+                        message = f"📈 <b>Current Positions</b> (Total PnL: ₹{total_pnl:,.2f})\n\n"
                         
                         for pos in positions[:10]:  # Limit to 10 positions
                             symbol = pos.get('symbol', 'N/A')
                             qty = pos.get('quantity', 0)
                             pnl = pos.get('pnl', 0)
-                            message += f"• **{symbol}:** {qty} shares, PnL: ₹{pnl:,.2f}\n"
+                            message += f"• <b>{symbol}:</b> {qty} shares, PnL: ₹{pnl:,.2f}\n"
                     else:
-                        message = "📈 **No open positions**"
+                        message = "📈 <b>No open positions</b>"
                 else:
                     message = "❌ Unable to fetch positions"
             
-            await update.message.reply_text(message, parse_mode='Markdown')
+            await update.message.reply_text(message, parse_mode='HTML')
             
         except Exception as e:
             await update.message.reply_text(f"Error fetching positions: {str(e)}")
@@ -299,18 +286,17 @@ The bot will automatically send you signals for approval.
                     total_trades = data.get('total_trades', 0)
                     win_rate = data.get('win_rate', 0)
                     
-                    message = f"""
-💰 **P&L Summary**
-
-📅 **Today's PnL:** ₹{daily_pnl:,.2f}
-📈 **Cumulative PnL:** ₹{cumulative_pnl:,.2f}
-🔢 **Total Trades:** {total_trades}
-🎯 **Win Rate:** {win_rate:.1%}
-                    """
+                    message = (
+                        "💰 <b>P&L Summary</b>\n\n"
+                        f"📅 <b>Today's PnL:</b> ₹{daily_pnl:,.2f}\n"
+                        f"📈 <b>Cumulative PnL:</b> ₹{cumulative_pnl:,.2f}\n"
+                        f"🔢 <b>Total Trades:</b> {total_trades}\n"
+                        f"🎯 <b>Win Rate:</b> {win_rate:.1%}"
+                    )
                 else:
                     message = "❌ Unable to fetch P&L data"
             
-            await update.message.reply_text(message, parse_mode='Markdown')
+            await update.message.reply_text(message, parse_mode='HTML')
             
         except Exception as e:
             await update.message.reply_text(f"Error fetching P&L: {str(e)}")
@@ -322,11 +308,11 @@ The bot will automatically send you signals for approval.
                 response = await client.post(f"{self.api_base_url}/system/halt")
                 
                 if response.status_code == 200:
-                    message = "🛑 **Trading Halted**\n\nAll trading activities have been stopped."
+                    message = "🛑 <b>Trading Halted</b>\n\nAll trading activities have been stopped."
                 else:
                     message = "❌ Unable to halt trading"
             
-            await update.message.reply_text(message, parse_mode='Markdown')
+            await update.message.reply_text(message, parse_mode='HTML')
             
         except Exception as e:
             await update.message.reply_text(f"Error halting trading: {str(e)}")
@@ -338,11 +324,11 @@ The bot will automatically send you signals for approval.
                 response = await client.post(f"{self.api_base_url}/system/resume")
                 
                 if response.status_code == 200:
-                    message = "✅ **Trading Resumed**\n\nTrading activities have been resumed."
+                    message = "✅ <b>Trading Resumed</b>\n\nTrading activities have been resumed."
                 else:
                     message = "❌ Unable to resume trading"
             
-            await update.message.reply_text(message, parse_mode='Markdown')
+            await update.message.reply_text(message, parse_mode='HTML')
             
         except Exception as e:
             await update.message.reply_text(f"Error resuming trading: {str(e)}")
@@ -370,12 +356,12 @@ The bot will automatically send you signals for approval.
                     if result.get("success"):
                         await query.edit_message_text(
                             f"✅ Signal {signal_id} {action}ed successfully",
-                            parse_mode='Markdown'
+                            parse_mode='HTML'
                         )
                     else:
                         await query.edit_message_text(
                             f"❌ Failed to {action} signal: {result.get('message', 'Unknown error')}",
-                            parse_mode='Markdown'
+                            parse_mode='HTML'
                         )
                 else:
                     await query.edit_message_text(f"❌ API error: {response.status_code}")
