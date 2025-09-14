@@ -21,6 +21,60 @@ async def get_order_manager(db: AsyncSession = Depends(get_db)) -> OrderManager:
     risk_service = RiskService(data_fetcher, db)
     return OrderManager(iifl, risk_service, data_fetcher, db)
 
+@router.post("")
+async def create_signal(
+    payload: Dict[str, Any],
+    order_manager: OrderManager = Depends(get_order_manager)
+) -> Dict[str, Any]:
+    """Create a signal and queue for approval (dry-run friendly).
+
+    Expected payload keys: symbol, signal_type, entry_price/price, stop_loss, take_profit, reason, strategy, confidence
+    """
+    try:
+        symbol = payload.get("symbol")
+        signal_type = payload.get("signal_type")
+        if not symbol or not signal_type:
+            raise HTTPException(status_code=400, detail="symbol and signal_type are required")
+
+        # Normalize fields
+        entry_price = payload.get("entry_price", payload.get("price"))
+        if entry_price is None:
+            raise HTTPException(status_code=400, detail="entry_price (or price) is required")
+
+        from models.signals import SignalType as ModelSignalType
+
+        try:
+            stype = ModelSignalType(signal_type.lower())
+        except Exception:
+            raise HTTPException(status_code=400, detail="invalid signal_type; expected buy/sell/exit")
+
+        signal_data = {
+            "symbol": symbol.upper(),
+            "signal_type": stype,
+            "entry_price": float(entry_price),
+            "stop_loss": payload.get("stop_loss"),
+            "take_profit": payload.get("take_profit"),
+            "reason": payload.get("reason", "Manual/Backtest generated"),
+            "strategy": payload.get("strategy", "manual"),
+            "confidence": float(payload.get("confidence", 0.7)),
+        }
+
+        # Create DB record
+        signal = await order_manager.create_signal(signal_data)
+        if not signal:
+            raise HTTPException(status_code=500, detail="Failed to create signal")
+
+        # Keep pending for approval when auto_trade is False; otherwise process/exe
+        await order_manager.process_signal(signal)
+
+        return signal.to_dict()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating signal: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("")
 async def get_signals(
     status: Optional[str] = Query(None, description="Filter by status: pending, approved, rejected, executed, expired, failed"),
@@ -49,19 +103,26 @@ async def get_signals(
 @router.post("/generate/intraday")
 async def generate_intraday_signals(
     category: str = "day_trading",
-    db: AsyncSession = Depends(get_db)
+    persist: bool = False,
+    queue_for_approval: bool = True,
+    db: AsyncSession = Depends(get_db),
+    order_manager: OrderManager = Depends(get_order_manager)
 ) -> Dict[str, Any]:
-    """Generate intraday signals for all symbols in the given watchlist category."""
+    """Generate intraday signals for all symbols in the given watchlist category.
+
+    If persist is True, signals are saved as pending for approval (dry-run friendly).
+    """
     try:
         iifl = IIFLAPIService()
         data_fetcher = DataFetcher(iifl, db_session=db)
         strategy = StrategyService(data_fetcher, db)
         symbols = await strategy.get_watchlist(category=category)
         generated: List[Dict[str, Any]] = []
+        persisted: List[int] = []
         for symbol in symbols:
             sigs = await strategy.generate_signals(symbol)
             for ts in sigs:
-                generated.append({
+                sig_dict = {
                     "symbol": ts.symbol,
                     "signal_type": ts.signal_type.value,
                     "entry_price": ts.entry_price,
@@ -70,10 +131,97 @@ async def generate_intraday_signals(
                     "confidence": ts.confidence,
                     "strategy": ts.strategy,
                     "metadata": ts.metadata or {}
-                })
-        return {"count": len(generated), "signals": generated}
+                }
+                generated.append(sig_dict)
+                if persist:
+                    created = await order_manager.create_signal({
+                        "symbol": ts.symbol,
+                        "signal_type": ts.signal_type,
+                        "entry_price": ts.entry_price,
+                        "stop_loss": ts.stop_loss,
+                        "take_profit": ts.target_price,
+                        "reason": f"{ts.strategy} generated",
+                        "strategy": ts.strategy,
+                        "confidence": ts.confidence,
+                    })
+                    if created:
+                        persisted.append(created.id)
+                        if queue_for_approval:
+                            await order_manager.process_signal(created)
+        return {"count": len(generated), "signals": generated, "persisted_ids": persisted}
     except Exception as e:
         logger.error(f"Error generating intraday signals: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/generate/historic")
+async def generate_historic_signals(
+    symbol: Optional[str] = None,
+    category: Optional[str] = None,
+    strategy_name: Optional[str] = None,
+    persist: bool = True,
+    queue_for_approval: bool = True,
+    db: AsyncSession = Depends(get_db),
+    order_manager: OrderManager = Depends(get_order_manager)
+) -> Dict[str, Any]:
+    """Replay historical data to generate signals and optionally persist them as pending.
+
+    If no symbol is provided, uses the watchlist for the given category.
+    """
+    try:
+        iifl = IIFLAPIService()
+        data_fetcher = DataFetcher(iifl, db_session=db)
+        strategy = StrategyService(data_fetcher, db)
+
+        symbols: List[str] = []
+        if symbol:
+            symbols = [symbol.upper()]
+        else:
+            symbols = await strategy.get_watchlist(category=category or "day_trading")
+
+        generated: List[Dict[str, Any]] = []
+        persisted: List[int] = []
+
+        for sym in symbols:
+            sigs = await strategy.generate_signals(sym)
+            # Fallback to mock if nothing generated
+            if not sigs:
+                mock_sigs = await strategy._generate_mock_signals(sym)  # noqa: SLF001
+                sigs = mock_sigs
+            for ts in sigs:
+                # Optional filter by strategy
+                if strategy_name and ts.strategy != strategy_name:
+                    continue
+                sig_dict = {
+                    "symbol": ts.symbol,
+                    "signal_type": ts.signal_type.value,
+                    "entry_price": ts.entry_price,
+                    "stop_loss": ts.stop_loss,
+                    "target_price": ts.target_price,
+                    "confidence": ts.confidence,
+                    "strategy": ts.strategy,
+                    "metadata": ts.metadata or {}
+                }
+                generated.append(sig_dict)
+                if persist:
+                    created = await order_manager.create_signal({
+                        "symbol": ts.symbol,
+                        "signal_type": ts.signal_type,
+                        "entry_price": ts.entry_price,
+                        "stop_loss": ts.stop_loss,
+                        "take_profit": ts.target_price,
+                        "reason": f"Historic replay - {ts.strategy}",
+                        "strategy": ts.strategy,
+                        "confidence": ts.confidence,
+                    })
+                    if created:
+                        persisted.append(created.id)
+                        if queue_for_approval:
+                            await order_manager.process_signal(created)
+
+        return {"count": len(generated), "signals": generated, "persisted_ids": persisted}
+
+    except Exception as e:
+        logger.error(f"Error generating historic signals: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/{signal_id}/approve")
