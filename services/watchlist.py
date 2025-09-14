@@ -77,6 +77,23 @@ class WatchlistService:
         await self.db.commit()
         logger.info(f"Set category for {symbol} to {category}")
 
+    async def set_category_for_all(self, category: str, active_only: Optional[bool] = None) -> int:
+        """Bulk update category for all watchlist rows.
+
+        - category: target category value
+        - active_only: if True, update only active rows; if False, only inactive; if None, update all
+        Returns number of rows affected (if available on dialect).
+        """
+        stmt = update(Watchlist)
+        if active_only is True:
+            stmt = stmt.where(Watchlist.is_active == True)
+        elif active_only is False:
+            stmt = stmt.where(Watchlist.is_active == False)
+        stmt = stmt.values(category=category)
+        result = await self.db.execute(stmt)
+        await self.db.commit()
+        return getattr(result, "rowcount", 0) or 0
+
     def _load_symbols_from_csv(self, file_path: str) -> List[str]:
         """Load symbols from a CSV file. Accepts header with 'Symbol'/'symbol' or first column.
 

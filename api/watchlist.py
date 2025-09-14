@@ -141,3 +141,25 @@ async def refresh_watchlist_from_csv(
     except Exception as e:
         logger.error(f"Error refreshing watchlist from CSV: {str(e)}")
         raise HTTPException(status_code=500, detail="Error refreshing watchlist from CSV")
+
+@router.post("/migrate/category")
+async def migrate_watchlist_category(
+    target: str = "day_trading",
+    active_only: Optional[bool] = True,
+    db: AsyncSession = Depends(get_db)
+):
+    """Bulk update existing watchlist rows to the given category (default day_trading).
+
+    Set active_only=true to only migrate active rows.
+    """
+    try:
+        if target not in {"long_term", "short_term", "day_trading", "hold"}:
+            raise HTTPException(status_code=400, detail="Invalid category")
+        service = WatchlistService(db)
+        affected = await service.set_category_for_all(target, active_only=active_only)
+        return {"message": f"Updated category to {target}", "affected": affected}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error migrating watchlist category: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error migrating watchlist category")
