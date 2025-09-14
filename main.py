@@ -20,6 +20,8 @@ from api.watchlist import router as watchlist_router
 # Import and configure logging service
 from services.logging_service import trading_logger
 import os
+from telegram_bot.bot import TelegramBot
+from telegram_bot.handlers import setup_handlers
 
 # Ensure logs directory exists
 os.makedirs('logs', exist_ok=True)
@@ -41,11 +43,33 @@ async def lifespan(app: FastAPI):
     logger.info("Database initialized")
     trading_logger.log_system_event("database_initialized")
     
+    # Start Telegram bot if configured
+    app.state.telegram_bot = None
+    try:
+        telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if telegram_token and telegram_chat_id:
+            bot = TelegramBot()
+            await setup_handlers(bot)
+            await bot.start()
+            app.state.telegram_bot = bot
+            logger.info("Telegram bot started")
+        else:
+            logger.warning("Telegram bot not started: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set")
+    except Exception as e:
+        logger.error(f"Failed to start Telegram bot: {str(e)}")
+    
     yield
     
     # Shutdown
     logger.info("Shutting down Stock Trading System...")
     trading_logger.log_system_event("application_shutdown")
+    try:
+        if getattr(app.state, "telegram_bot", None):
+            await app.state.telegram_bot.stop()
+            logger.info("Telegram bot stopped")
+    except Exception as e:
+        logger.error(f"Error stopping Telegram bot: {str(e)}")
     await close_db()
     logger.info("Database connections closed")
     trading_logger.log_system_event("database_closed")
