@@ -320,7 +320,7 @@ class DataFetcher:
             # Derive available margin via pre-order margin endpoint with minimal dummy order
             try:
                 fallback = await self.calculate_required_margin(
-                    symbol="RELIANCE", quantity=1, transaction_type="BUY", price=None, product="NORMAL", exchange="NSEEQ"
+                    symbol="1594", quantity=1, transaction_type="BUY", price=None, product="NORMAL", exchange="NSEEQ"
                 )
                 if fallback:
                     # Normalize to expected keys so UI can read availableMargin/usedMargin

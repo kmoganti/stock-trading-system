@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     
     # Trading Configuration
     auto_trade: bool = Field(False, env="AUTO_TRADE")
+    dry_run: bool = Field(True, env="DRY_RUN")
     signal_timeout: int = Field(300, env="SIGNAL_TIMEOUT")  # seconds
     risk_per_trade: float = Field(0.02, env="RISK_PER_TRADE")  # 2%
     max_positions: int = Field(10, env="MAX_POSITIONS")
