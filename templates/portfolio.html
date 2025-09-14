@@ -192,7 +192,7 @@ document.addEventListener('alpine:init', () => {
                 console.log('Received portfolio summary data from /api/portfolio/summary:', data);
                 
                 // Update summary values
-                this.totalEquity = data.total_value || 0;
+                this.totalEquity = (data.total_equity ?? data.total_value) || 0;
                 this.availableMargin = data.available_margin || 0;
                 this.totalPnL = data.total_pnl || 0;
                 
