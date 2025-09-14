@@ -37,12 +37,26 @@ class OrderManager:
                 await self._get_available_capital()
             )
             
-            required_margin = await self.data_fetcher.calculate_required_margin(
+            required_margin_info = await self.data_fetcher.calculate_required_margin(
                 signal_data['symbol'],
                 position_size,
                 signal_data['signal_type'].value,
                 signal_data['entry_price']
             )
+            # Normalize required margin to a float value
+            if isinstance(required_margin_info, dict):
+                required_margin_value = float(
+                    required_margin_info.get("current_order_margin")
+                    or required_margin_info.get("pre_order_margin")
+                    or required_margin_info.get("post_order_margin")
+                    or 0.0
+                )
+            else:
+                # In some edge cases the API may return a primitive; coerce to float or 0.0
+                try:
+                    required_margin_value = float(required_margin_info) if required_margin_info is not None else 0.0
+                except Exception:
+                    required_margin_value = 0.0
             
             signal = Signal(
                 symbol=signal_data['symbol'],
@@ -50,7 +64,7 @@ class OrderManager:
                 reason=signal_data.get('reason', ''),
                 stop_loss=signal_data.get('stop_loss'),
                 take_profit=signal_data.get('take_profit'),
-                margin_required=required_margin or 0.0,
+                margin_required=required_margin_value,
                 status=SignalStatus.PENDING,
                 expiry_time=expiry_time,
                 quantity=position_size,

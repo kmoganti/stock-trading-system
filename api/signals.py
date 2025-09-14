@@ -104,6 +104,7 @@ async def get_signals(
 async def generate_intraday_signals(
     category: str = "day_trading",
     persist: bool = False,
+    persisted: Optional[bool] = None,  # alias for persist (backward compatibility with clients)
     queue_for_approval: bool = True,
     db: AsyncSession = Depends(get_db),
     order_manager: OrderManager = Depends(get_order_manager)
@@ -113,6 +114,10 @@ async def generate_intraday_signals(
     If persist is True, signals are saved as pending for approval (dry-run friendly).
     """
     try:
+        # Support 'persisted=true' as an alias for 'persist=true'
+        if persisted is not None:
+            persist = bool(persist or persisted)
+
         iifl = IIFLAPIService()
         data_fetcher = DataFetcher(iifl, db_session=db)
         strategy = StrategyService(data_fetcher, db)
@@ -159,6 +164,7 @@ async def generate_historic_signals(
     category: Optional[str] = None,
     strategy_name: Optional[str] = None,
     persist: bool = True,
+    persisted: Optional[bool] = None,  # alias for persist (backward compatibility with clients)
     queue_for_approval: bool = True,
     db: AsyncSession = Depends(get_db),
     order_manager: OrderManager = Depends(get_order_manager)
@@ -168,6 +174,10 @@ async def generate_historic_signals(
     If no symbol is provided, uses the watchlist for the given category.
     """
     try:
+        # Support 'persisted=true' as an alias for 'persist=true'
+        if persisted is not None:
+            persist = bool(persist or persisted)
+
         iifl = IIFLAPIService()
         data_fetcher = DataFetcher(iifl, db_session=db)
         strategy = StrategyService(data_fetcher, db)
