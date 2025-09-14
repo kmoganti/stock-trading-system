@@ -24,19 +24,10 @@ import os
 # Ensure logs directory exists
 os.makedirs('logs', exist_ok=True)
 
-# Configure root logger to use our trading logger with DEBUG level
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('logs/trading_system.log'),
-        logging.StreamHandler()
-    ]
-)
+# The TradingLogger service handles all application-specific logging configurations.
 
 # Suppress watchfiles logging spam
 logging.getLogger('watchfiles').setLevel(logging.WARNING)
-logging.getLogger('watchfiles.main').setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
