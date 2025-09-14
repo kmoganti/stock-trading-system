@@ -172,6 +172,16 @@ class OrderManager:
     async def _execute_signal(self, signal: Signal) -> bool:
         """Execute a trading signal by placing order with IIFL"""
         try:
+            # In dry-run or non-production, simulate order execution without hitting broker API
+            if getattr(self.settings, "dry_run", False) or self.settings.environment != "production":
+                simulated_order_id = f"DRYRUN-{int(datetime.now().timestamp())}-{signal.id}"
+                signal.status = SignalStatus.EXECUTED
+                signal.executed_at = datetime.now()
+                signal.order_id = simulated_order_id
+                await self.db.commit()
+                logger.info(f"Simulated order execution for signal {signal.id} with id {simulated_order_id}")
+                return True
+
             # Prepare order data
             order_data = self.iifl.format_order_data(
                 symbol=signal.symbol,
