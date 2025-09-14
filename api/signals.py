@@ -57,20 +57,20 @@ async def generate_intraday_signals(
         data_fetcher = DataFetcher(iifl, db_session=db)
         strategy = StrategyService(data_fetcher, db)
         symbols = await strategy.get_watchlist(category=category)
-            generated: List[Dict[str, Any]] = []
-            for symbol in symbols:
-                sigs = await strategy.generate_signals(symbol)
-                for ts in sigs:
-                    generated.append({
-                        "symbol": ts.symbol,
-                        "signal_type": ts.signal_type.value,
-                        "entry_price": ts.entry_price,
-                        "stop_loss": ts.stop_loss,
-                        "target_price": ts.target_price,
-                        "confidence": ts.confidence,
-                        "strategy": ts.strategy,
-                        "metadata": ts.metadata or {}
-                    })
+        generated: List[Dict[str, Any]] = []
+        for symbol in symbols:
+            sigs = await strategy.generate_signals(symbol)
+            for ts in sigs:
+                generated.append({
+                    "symbol": ts.symbol,
+                    "signal_type": ts.signal_type.value,
+                    "entry_price": ts.entry_price,
+                    "stop_loss": ts.stop_loss,
+                    "target_price": ts.target_price,
+                    "confidence": ts.confidence,
+                    "strategy": ts.strategy,
+                    "metadata": ts.metadata or {}
+                })
         return {"count": len(generated), "signals": generated}
     except Exception as e:
         logger.error(f"Error generating intraday signals: {str(e)}", exc_info=True)
