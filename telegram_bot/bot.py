@@ -342,11 +342,14 @@ class TelegramBot:
             callback_data = query.data
             action, signal_id = callback_data.split(':')
             
+            # The bot must authenticate itself to the API using the shared secret key
+            headers = {"X-API-Key": self.settings.api_secret_key}
+            
             async with httpx.AsyncClient() as client:
                 if action == "approve":
-                    response = await client.post(f"{self.api_base_url}/signals/{signal_id}/approve")
+                    response = await client.post(f"{self.api_base_url}/signals/{signal_id}/approve", headers=headers)
                 elif action == "reject":
-                    response = await client.post(f"{self.api_base_url}/signals/{signal_id}/reject")
+                    response = await client.post(f"{self.api_base_url}/signals/{signal_id}/reject", headers=headers)
                 else:
                     await query.edit_message_text("❌ Invalid action")
                     return
@@ -364,7 +367,12 @@ class TelegramBot:
                             parse_mode='HTML'
                         )
                 else:
-                    await query.edit_message_text(f"❌ API error: {response.status_code}")
+                    error_detail = "Unknown error"
+                    try:
+                        error_detail = response.json().get('detail', 'Unknown API error')
+                    except Exception:
+                        pass
+                    await query.edit_message_text(f"❌ API error ({response.status_code}): {error_detail}")
             
         except Exception as e:
             logger.error(f"Error handling callback: {str(e)}")

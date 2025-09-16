@@ -176,6 +176,24 @@
             </div>
         </div>
     </div>
+
+    <!-- API Key Modal -->
+    <div x-show="!apiKey" class="fixed inset-0 bg-gray-800 bg-opacity-75 flex items-center justify-center z-50" x-cloak>
+        <div class="bg-white rounded-lg p-8 shadow-xl max-w-sm w-full mx-4">
+            <h3 class="text-xl font-bold mb-4 text-gray-900">API Key Required</h3>
+            <p class="text-gray-600 mb-6">To manage signals, please enter your API key. You can find this in your <code>.env</code> file on the server.</p>
+            <div class="space-y-4">
+                <div>
+                    <label for="apiKeyInput" class="block text-sm font-medium text-gray-700">API Key</label>
+                    <input type="password" id="apiKeyInput" x-model="newApiKey" @keydown.enter="saveApiKey" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" placeholder="Enter your secret key">
+                </div>
+                <button @click="saveApiKey" class="w-full inline-flex justify-center py-2 px-4 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                    Save and Continue
+                </button>
+            </div>
+        </div>
+    </div>
+
 </div>
 
 <script>
@@ -186,15 +204,20 @@ document.addEventListener('alpine:init', () => {
         statusFilter: '',
         showModal: false,
         selectedSignal: null,
+        newApiKey: '',
         
         // IMPORTANT: For this to work, you must store your API key in the browser's localStorage.
         // Open your browser's developer console and run:
         // localStorage.setItem('tradingApiKey', 'YOUR_SECRET_KEY_HERE');
         apiKey: localStorage.getItem('tradingApiKey'),
         async init() {
-            await this.loadSignals();
-            // Refresh every 15 seconds
-            setInterval(() => this.loadSignals(), 15000);
+            // Only load signals if the API key is present.
+            // Otherwise, the modal will show, and signals will be loaded after the key is saved.
+            if (this.apiKey) {
+                await this.loadSignals();
+                // Refresh every 15 seconds
+                setInterval(() => this.loadSignals(), 15000);
+            }
         },
         
         async loadSignals() {
@@ -268,6 +291,19 @@ document.addEventListener('alpine:init', () => {
             }
         },
         
+        saveApiKey() {
+            if (!this.newApiKey.trim()) {
+                showToast('API Key cannot be empty', 'error');
+                return;
+            }
+            localStorage.setItem('tradingApiKey', this.newApiKey);
+            this.apiKey = this.newApiKey;
+            this.newApiKey = ''; // Clear the input field
+            showToast('API Key saved successfully!', 'success');
+            // Now that the key is saved, initialize the page to load signals.
+            this.init();
+        },
+
         viewSignalDetails(signal) {
             this.selectedSignal = signal;
             this.showModal = true;

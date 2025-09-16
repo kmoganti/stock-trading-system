@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     sentry_dsn: Optional[str] = Field(None, env="SENTRY_DSN")
     sentry_traces_sample_rate: float = Field(0.0, env="SENTRY_TRACES_SAMPLE_RATE")
     sentry_profiles_sample_rate: float = Field(0.0, env="SENTRY_PROFILES_SAMPLE_RATE")
+
+    api_secret_key: Optional[str] = Field(None, env="API_SECRET_KEY")
     
     # Server Configuration
     host: str = Field("0.0.0.0", env="HOST")
