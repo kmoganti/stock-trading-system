@@ -108,6 +108,45 @@ async def refresh_nifty100_watchlist(
         logger.error(f"Error refreshing Nifty 100 watchlist: {str(e)}")
         raise HTTPException(status_code=500, detail="Error refreshing watchlist")
 
+@router.post("/populate/nifty100_multi_category")
+async def populate_nifty100_multi_category(
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Populate the watchlist with Nifty-100 symbols into both 'long_term' and 'short_term' categories.
+    This is a convenience endpoint for initial setup.
+    """
+    try:
+        service = WatchlistService(db)
+        file_path = "data/ind_nifty100list.csv"
+        
+        # Add to long_term
+        long_term_result = await service.refresh_from_csv(
+            file_path=file_path,
+            category="long_term",
+            deactivate_missing=False,
+        )
+        
+        # Add to short_term
+        short_term_result = await service.refresh_from_csv(
+            file_path=file_path,
+            category="short_term",
+            deactivate_missing=False,
+        )
+        
+        return {
+            "message": "Successfully populated Nifty 100 symbols into multiple categories.",
+            "results": {
+                "long_term": long_term_result,
+                "short_term": short_term_result,
+            }
+        }
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Nifty 100 CSV file not found at {file_path}")
+    except Exception as e:
+        logger.error(f"Error populating Nifty 100 watchlist: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Error populating watchlist from Nifty 100 CSV")
+
 @router.post("/refresh/csv")
 async def refresh_watchlist_from_csv(
     file_path: str = "data/ind_nifty100list.csv",
