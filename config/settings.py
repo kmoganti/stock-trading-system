@@ -38,9 +38,13 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = Field("INFO", env="LOG_LEVEL")
     log_file: str = Field("logs/trading_system.log", env="LOG_FILE")
+    log_retention_days: int = Field(14, env="LOG_RETENTION_DAYS")
     
     # Environment
     environment: str = Field("development", env="ENVIRONMENT")
+    sentry_dsn: Optional[str] = Field(None, env="SENTRY_DSN")
+    sentry_traces_sample_rate: float = Field(0.0, env="SENTRY_TRACES_SAMPLE_RATE")
+    sentry_profiles_sample_rate: float = Field(0.0, env="SENTRY_PROFILES_SAMPLE_RATE")
     
     # Server Configuration
     host: str = Field("0.0.0.0", env="HOST")

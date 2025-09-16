@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Dict, Any, List, Optional, Literal
 import logging
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from models.database import get_db
 from models.signals import Signal, SignalStatus
 from services.order_manager import OrderManager
@@ -32,26 +32,22 @@ class SignalCreationRequest(BaseModel):
     strategy: str = "manual"
     confidence: float = Field(0.7, ge=0, le=1)
 
-    @validator('stop_loss', 'take_profit', always=True)
-    def check_sl_tp_against_entry(cls, v, values, field):
+    @model_validator(mode='after')
+    def validate_sl_tp_relative_to_entry(self):
         """Validate that stop-loss and take-profit are logical relative to the entry price."""
-        if v is None:
-            return v
-        
-        entry_price = values.get('entry_price')
-        signal_type = values.get('signal_type')
-
-        if entry_price and signal_type == 'buy':
-            if field.name == 'stop_loss' and v >= entry_price:
+        if self.entry_price is None:
+            return self
+        if self.signal_type == 'buy':
+            if self.stop_loss is not None and self.stop_loss >= self.entry_price:
                 raise ValueError('For a BUY signal, stop_loss must be below the entry_price.')
-            if field.name == 'take_profit' and v <= entry_price:
+            if self.take_profit is not None and self.take_profit <= self.entry_price:
                 raise ValueError('For a BUY signal, take_profit must be above the entry_price.')
-        elif entry_price and signal_type == 'sell':
-            if field.name == 'stop_loss' and v <= entry_price:
+        elif self.signal_type == 'sell':
+            if self.stop_loss is not None and self.stop_loss <= self.entry_price:
                 raise ValueError('For a SELL signal, stop_loss must be above the entry_price.')
-            if field.name == 'take_profit' and v >= entry_price:
+            if self.take_profit is not None and self.take_profit >= self.entry_price:
                 raise ValueError('For a SELL signal, take_profit must be below the entry_price.')
-        return v
+        return self
 
 @router.post("")
 async def create_signal(
@@ -61,7 +57,7 @@ async def create_signal(
     """Create a signal and queue for approval (dry-run friendly)."""
     try:
         from models.signals import SignalType as ModelSignalType
-        signal_data = payload.dict()
+        signal_data = payload.model_dump()
         signal_data["signal_type"] = ModelSignalType(payload.signal_type)
 
         # Create DB record
