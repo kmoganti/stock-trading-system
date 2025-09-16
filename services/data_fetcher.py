@@ -105,15 +105,19 @@ class DataFetcher:
             # Fetch from IIFL API
             result = await self.iifl.get_historical_data(symbol, interval, from_date, to_date)
             
-            # Accept both 'status' and legacy 'stat' fields
-            ok_status = bool(result) and isinstance(result, dict) and (
+            # Accept both 'status' and legacy 'stat' fields, but also tolerate
+            # providers returning non-"Ok" even when data exists
+            has_ok_flag = bool(result) and isinstance(result, dict) and (
                 result.get("status") == "Ok" or result.get("stat") == "Ok"
             )
-            if ok_status:
-                # Data may be under 'result' or 'data'
+            # Data may still be present even when status is not Ok
+            payload_list = []
+            if isinstance(result, dict):
                 payload_list = result.get("result")
                 if not isinstance(payload_list, list):
                     payload_list = result.get("data", [])
+
+            if has_ok_flag or (isinstance(payload_list, list) and len(payload_list) > 0):
                 if payload_list:
                     # Standardize data format
                     standardized_data: List[Dict] = []
