@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 import logging
 import os
 import time
-from config.settings import get_settings
 from services.logging_service import trading_logger
 
 logger = logging.getLogger(__name__)
@@ -25,16 +24,36 @@ class IIFLAPIService:
     
     def __init__(self):
         if not self._initialized:
-            self.settings = get_settings()
-            self.client_id = self.settings.iifl_client_id
-            self.auth_code = self.settings.iifl_auth_code
-            self.app_secret = self.settings.iifl_app_secret
-            self.base_url = self.settings.iifl_base_url
+            # Lazy-load settings with fallback to env to avoid hard dependency on pydantic
+            self._load_settings()
             self.session_token: Optional[str] = None
             self.token_expiry: Optional[datetime] = None
             self.http_client: Optional[httpx.AsyncClient] = None
             self.get_user_session_endpoint = "/getusersession"
             IIFLAPIService._initialized = True
+
+    def _load_settings(self) -> None:
+        """Load settings using config.settings if available, else fallback to os.environ."""
+        try:
+            from config.settings import get_settings  # type: ignore
+            settings = get_settings()
+            self.client_id = settings.iifl_client_id
+            self.auth_code = settings.iifl_auth_code
+            self.app_secret = settings.iifl_app_secret
+            self.base_url = settings.iifl_base_url
+            self.settings = settings
+        except Exception:
+            # Minimal fallback using environment variables directly
+            self.client_id = os.getenv("IIFL_CLIENT_ID", "")
+            self.auth_code = os.getenv("IIFL_AUTH_CODE", "")
+            self.app_secret = os.getenv("IIFL_APP_SECRET", "")
+            self.base_url = os.getenv("IIFL_BASE_URL", "https://ttblaze.iifl.com/apimarketdata")
+            self.settings = type("_FallbackSettings", (), {
+                "iifl_client_id": self.client_id,
+                "iifl_auth_code": self.auth_code,
+                "iifl_app_secret": self.app_secret,
+                "iifl_base_url": self.base_url,
+            })()
     
     async def get_http_client(self) -> httpx.AsyncClient:
         """Get or create an httpx.AsyncClient instance."""
@@ -411,16 +430,23 @@ class IIFLAPIService:
     # Market Data
     async def get_historical_data(self, symbol: str, interval: str, from_date: str, to_date: str) -> Optional[Dict]:
         """Get historical OHLCV data"""
+        # Preserve numeric instrument IDs; only normalize string equity symbols
+        normalized_symbol = symbol
+        try:
+            # If this succeeds, we have a numeric code; do not alter
+            int(str(symbol).strip())
+        except ValueError:
+            # Non-numeric, normalize to uppercase and ensure -EQ suffix
+            normalized_symbol = str(symbol).upper()
+            if not normalized_symbol.endswith("-EQ"):
+                normalized_symbol = f"{normalized_symbol}-EQ"
+
         data = {
-            "symbol": symbol.upper(),
+            "symbol": normalized_symbol,
             "interval": interval,
             "fromDate": from_date,
             "toDate": to_date
         }
-        # The historical data API often requires the '-EQ' suffix for equity symbols.
-        # This is a safe adjustment to make here as it's specific to this endpoint.
-        if not data["symbol"].endswith("-EQ"):
-            data["symbol"] = f"{data['symbol']}-EQ"
             
         return await self._make_api_request("POST", "/marketdata/historicaldata", data)
     
