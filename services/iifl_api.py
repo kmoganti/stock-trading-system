@@ -130,25 +130,48 @@ class IIFLAPIService:
             return {}
     
     async def authenticate(self) -> bool:
-        """Authenticate by generating a daily JWT from the auth code and client details.
-        The generated token is cached and reused until end-of-day. """
+        """Authenticate with IIFL by requesting a session token via checksum.
+        Cache and reuse the session token until end-of-day, or until the server rejects it.
+        """
         if not self.auth_code:
             logger.error("No auth code available for authentication")
             return False
         try:
-            token, expiry = self._generate_daily_jwt_token()
-            self.session_token = token
-            self.token_expiry = expiry
-            trading_logger.log_system_event("iifl_auth_success", {
-                "token_preview": token[:10] + "...",
-                "token_expiry": expiry.isoformat(),
-                "response_format": "generated_jwt"
-            })
-            logger.info(f"Authentication successful with generated JWT valid until {expiry}")
-            return True
+            response = self.get_user_session(self.auth_code)
+            if not response:
+                raise ValueError("Empty session response from IIFL")
+
+            # Success field commonly returns 'Ok' on IIFL-style APIs
+            stat = response.get("stat") or response.get("status") or response.get("Status")
+
+            token, expiry = self._extract_token_and_expiry(response)
+
+            if stat and str(stat).lower() in ("ok", "success") and token:
+                self.session_token = token
+                self.token_expiry = expiry or self._end_of_day()
+                trading_logger.log_system_event("iifl_auth_success", {
+                    "token_preview": token[:10] + "...",
+                    "token_expiry": self.token_expiry.isoformat(),
+                    "response_format": "iifl_session"
+                })
+                logger.info(f"Authentication successful. Token valid until {self.token_expiry}")
+                return True
+
+            # Sometimes vendors don't return explicit status; accept if we found a plausible token
+            if token:
+                self.session_token = token
+                self.token_expiry = expiry or self._end_of_day()
+                logger.warning("Auth response lacked explicit success status; proceeding with extracted token.")
+                return True
+
+            # Failure path with detailed message if present
+            error_message = response.get("emsg") or response.get("message") or "Unknown authentication error"
+            logger.error(f"IIFL authentication failed: {error_message}")
+            return False
+
         except Exception as e:
-            logger.error(f"JWT authentication exception: {str(e)}")
-            # Development fallback
+            logger.error(f"Authentication exception: {str(e)}")
+            # Development fallback to allow UI testing without live token
             self.session_token = f"mock_token_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             self.token_expiry = datetime.now() + timedelta(hours=1)
             return True
@@ -513,6 +536,91 @@ class IIFLAPIService:
         algorithm = "HS256"
         token = jwt.encode(payload, secret, algorithm=algorithm)
         return token, end_of_day
+
+    def _end_of_day(self) -> datetime:
+        """Helper: end-of-day timestamp for today."""
+        now = datetime.now()
+        return datetime(year=now.year, month=now.month, day=now.day, hour=23, minute=59, second=59)
+
+    def _extract_token_and_expiry(self, response: Dict) -> Tuple[Optional[str], Optional[datetime]]:
+        """Extract a plausible session token and expiry from a heterogeneous vendor response.
+        Falls back to end-of-day if expiry is not present.
+        """
+        if not isinstance(response, dict):
+            return None, None
+
+        # Search common containers first
+        candidates: List[Dict] = []
+        for key in ("Success", "success", "Data", "data", "response", "Result", "result"):
+            if isinstance(response.get(key), dict):
+                candidates.append(response.get(key))
+        # Include the root dict as well
+        candidates.append(response)
+
+        token_value: Optional[str] = None
+        expiry_value: Optional[datetime] = None
+
+        token_keys = [
+            "jwtToken", "access_token", "accessToken", "sessionToken", "session_token",
+            "susertoken", "sUserToken", "token", "sessionId", "session_id"
+        ]
+        expiry_keys = [
+            "expires_at", "expiry", "valid_till", "validTill", "expiresIn", "expires_in"
+        ]
+
+        def parse_expiry(value: Any) -> Optional[datetime]:
+            try:
+                if isinstance(value, (int, float)):
+                    # epoch seconds
+                    # Treat small values as seconds-from-now (expires_in)
+                    if value > 10_000_000:  # likely epoch
+                        return datetime.fromtimestamp(int(value))
+                    return datetime.now() + timedelta(seconds=int(value))
+                if isinstance(value, str):
+                    # ISO datetime
+                    try:
+                        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+                    except Exception:
+                        # numeric str
+                        if value.isdigit():
+                            iv = int(value)
+                            if iv > 10_000_000:
+                                return datetime.fromtimestamp(iv)
+                            return datetime.now() + timedelta(seconds=iv)
+                return None
+            except Exception:
+                return None
+
+        # Exact key search
+        for container in candidates:
+            for key in token_keys:
+                if key in container and isinstance(container.get(key), str) and container.get(key):
+                    token_value = container.get(key)
+                    break
+            if token_value:
+                # Attempt to parse expiry from same container
+                for ekey in expiry_keys:
+                    if ekey in container and container.get(ekey) is not None:
+                        expiry_value = parse_expiry(container.get(ekey))
+                        break
+                break
+
+        # Fallback: heuristic search for any key containing 'token' or 'session'
+        if not token_value:
+            for container in candidates:
+                for k, v in container.items():
+                    if isinstance(v, str) and v and ("token" in k.lower() or "session" in k.lower()):
+                        token_value = v
+                        # Try nearby expiry
+                        for ekey in expiry_keys:
+                            if ekey in container and container.get(ekey) is not None:
+                                expiry_value = parse_expiry(container.get(ekey))
+                                break
+                        break
+                if token_value:
+                    break
+
+        return token_value, expiry_value
     
     async def __aenter__(self):
         """Async context manager entry"""
