@@ -25,8 +25,8 @@ async def debug_historical_data():
     auth_result = await iifl_service.authenticate()
     print(f"Authentication: {'SUCCESS' if auth_result else 'FAILED'}")
     
-    if not auth_result:
-        print("Cannot proceed without authentication")
+    if not auth_result or iifl_service.session_token.startswith('mock_'):
+        print("Cannot proceed without a real authentication token. Please update your .env file.")
         return
     
     # Calculate date range
@@ -35,52 +35,39 @@ async def debug_historical_data():
     
     print(f"Date range: {from_date} to {to_date}")
     
-    # Test with a simple symbol
-    symbol = "RELIANCE"
-    interval = "1D"
-    
-    print(f"\nTesting historical data for {symbol}...")
-    
-    # Make direct API call to see raw response
-    data = {
-        "symbol": symbol,
-        "interval": interval,
-        "fromDate": from_date,
-        "toDate": to_date
-    }
-    
-    print(f"Request payload: {json.dumps(data, indent=2)}")
-    
-    result = await iifl_service._make_api_request("POST", "/marketdata/historicaldata", data)
-    
-    print(f"\nRaw API Response:")
-    print(f"Type: {type(result)}")
-    print(f"Content: {json.dumps(result, indent=2) if result else 'None'}")
-    
-    # Test with different symbol formats
-    test_symbols = ["RELIANCE", "RELIANCE-EQ", "RELIANCE.NSE", "500325"]
+    # Test with different symbol formats for a known stock (RELIANCE)
+    # 2885 is the instrumentId for RELIANCE
+    test_symbols = ["RELIANCE", "RELIANCE-EQ", "2885"]
     
     for test_symbol in test_symbols:
-        print(f"\nTesting symbol format: {test_symbol}")
-        test_data = data.copy()
-        test_data["symbol"] = test_symbol
+        print("\n" + "="*50)
+        print(f"Testing with symbol format: '{test_symbol}'")
         
-        test_result = await iifl_service._make_api_request("POST", "/marketdata/historicaldata", test_data)
+        data = {
+            "symbol": test_symbol,
+            "interval": "1D",
+            "fromDate": from_date,
+            "toDate": to_date
+        }
+        
+        print(f"Request Payload: {json.dumps(data, indent=2)}")
+        
+        # We call _make_api_request directly to bypass any logic in get_historical_data
+        test_result = await iifl_service._make_api_request("POST", "/marketdata/historicaldata", data)
+        
+        print(f"Raw API Response: {json.dumps(test_result, indent=2) if test_result else 'None'}")
         
         if test_result:
             status = test_result.get("status", "Unknown")
             message = test_result.get("message", "No message")
             result_data = test_result.get("result", [])
             
-            print(f"  Status: {status}")
-            print(f"  Message: {message}")
-            print(f"  Result count: {len(result_data) if isinstance(result_data, list) else 'Not a list'}")
-            
-            if isinstance(result_data, list) and result_data:
-                print(f"  Sample data: {result_data[0]}")
-                break
-        else:
-            print(f"  No response")
+            if status == "Ok" and isinstance(result_data, list) and result_data:
+                print(f"\n[SUCCESS] This format worked! Received {len(result_data)} records.")
+                print(f"Sample record: {result_data[0]}")
+                break # Stop on first success
+            else:
+                print(f"\n[FAILED] Status: {status}, Message: {message}")
 
 if __name__ == "__main__":
     asyncio.run(debug_historical_data())

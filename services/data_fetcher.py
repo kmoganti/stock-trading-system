@@ -39,39 +39,73 @@ class DataFetcher:
         """Set cache with expiry"""
         self.cache[key] = data
         self.cache_expiry[key] = datetime.now() + timedelta(seconds=ttl_seconds)
+
+    async def get_historical_data_df(self, symbol: str, interval: str, from_date: str, to_date: str) -> Optional[pd.DataFrame]:
+        """
+        Get historical OHLCV data as a pandas DataFrame.
+        This is a convenience wrapper around get_historical_data.
+        """
+        if not HAS_PANDAS:
+            logger.error("Pandas is not installed. Cannot return a DataFrame.")
+            return None
+
+        try:
+            # Pass the specific date range to the underlying fetcher
+            raw_data = await self.get_historical_data(symbol, interval, from_date=from_date, to_date=to_date)
+
+            if not raw_data:
+                return pd.DataFrame()
+
+            df = pd.DataFrame(raw_data)
+            
+            # Standardize and clean the DataFrame
+            df['date'] = pd.to_datetime(df['date'])
+            df.set_index('date', inplace=True)
+            
+            for col in ['open', 'high', 'low', 'close', 'volume']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            return df.dropna()
+        except Exception as e:
+            logger.error(f"Error creating DataFrame for {symbol}: {str(e)}", exc_info=True)
+            return None
     
     async def get_historical_data(self, symbol: str, interval: str = "1D", 
-                                days: int = 100) -> Optional[List[Dict]]:
+                                days: int = 100, from_date: Optional[str] = None, 
+                                to_date: Optional[str] = None) -> Optional[List[Dict]]:
         """Get historical OHLCV data"""
         try:
-            cache_key = f"hist_{symbol}_{interval}_{days}"
+            # Calculate date range if not provided
+            if not from_date or not to_date:
+                to_date = datetime.now().strftime("%Y-%m-%d")
+                from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            
+            # Use a consistent cache key based on the date range
+            cache_key = f"hist_{symbol}_{interval}_{from_date}_{to_date}"
             
             # Check cache first
             cached_data = self._get_cache(cache_key)
             if cached_data is not None:
                 return cached_data
             
-            # Calculate date range
-            from datetime import datetime, timedelta
-            to_date = datetime.now().strftime("%Y-%m-%d")
-            from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-            
             # Fetch from IIFL API
             result = await self.iifl.get_historical_data(symbol, interval, from_date, to_date)
             
             if result and result.get("status") == "Ok":
-                data = result.get("resultData", [])
+                data = result.get("result", [])
                 if data:
                     # Standardize data format
                     standardized_data = []
                     for item in data:
                         standardized_item = {k.lower(): v for k, v in item.items()}
                         standardized_data.append(standardized_item)
-                    
+
                     self._set_cache(cache_key, standardized_data, 300)
                     return standardized_data
             elif result:
-                logger.warning(f"Failed to fetch historical data for {symbol}: {result.get('emsg', 'Unknown API error')}")
+                error_message = result.get('message') or result.get('emsg', 'Unknown API error')
+                logger.warning(f"Failed to fetch historical data for {symbol}: {error_message}")
             
             return []
             
