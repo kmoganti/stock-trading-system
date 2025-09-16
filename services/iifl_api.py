@@ -445,19 +445,24 @@ class IIFLAPIService:
     # Market Data
     async def get_historical_data(self, symbol: str, interval: str, from_date: str, to_date: str) -> Optional[Dict]:
         """Get historical OHLCV data"""
-        # Preserve numeric instrument IDs; for string symbols just uppercase without suffixes
+        # Preserve numeric instrument IDs; for string symbols normalize case and strip known suffixes
         normalized_symbol = symbol
         try:
             int(str(symbol).strip())
         except ValueError:
-            normalized_symbol = str(symbol).upper()
+            normalized_symbol = str(symbol).upper().strip()
+            # Strip common suffixes like -EQ, -BE, -BZ, -SM, etc. for a base variant
+            if "-" in normalized_symbol:
+                base_part = normalized_symbol.split("-", 1)[0]
+            else:
+                base_part = normalized_symbol
 
         def _has_payload(resp: Optional[Dict]) -> bool:
             if not isinstance(resp, dict):
                 return False
             if resp.get("status") == "Ok" or resp.get("stat") == "Ok":
                 return True
-            for key in ["result", "data", "resultData"]:
+            for key in ["result", "data", "resultData", "candles", "history"]:
                 value = resp.get(key)
                 if isinstance(value, list) and len(value) > 0:
                     return True
@@ -482,7 +487,7 @@ class IIFLAPIService:
         # Interval variants (keep original first)
         interval_variants = [interval]
         if interval.upper() == "1D":
-            interval_variants.extend(["DAY", "1d", "day"])
+            interval_variants.extend(["DAY", "1d", "day", "D", "1DAY"])
 
         # Symbol candidates
         is_numeric_symbol = False
@@ -492,9 +497,19 @@ class IIFLAPIService:
         except ValueError:
             is_numeric_symbol = False
 
-        symbol_variants = [normalized_symbol]
-        if not is_numeric_symbol and not str(normalized_symbol).endswith("-EQ"):
-            symbol_variants.append(f"{normalized_symbol}-EQ")
+        symbol_variants: list[str] = []
+        # Start with exact normalized symbol
+        symbol_variants.append(str(normalized_symbol))
+        if not is_numeric_symbol:
+            # Add base-part without suffix if available
+            if 'base_part' in locals() and base_part and base_part != normalized_symbol:
+                symbol_variants.append(base_part)
+            # Ensure we try explicit -EQ suffix too
+            if not str(normalized_symbol).endswith("-EQ"):
+                symbol_variants.append(f"{base_part if 'base_part' in locals() else normalized_symbol}-EQ")
+        # Dedupe while preserving order
+        seen: set[str] = set()
+        symbol_variants = [s for s in symbol_variants if not (s in seen or seen.add(s))]
 
         # 1) Primary: symbol + fromDate/toDate
         for sym in symbol_variants:
@@ -520,12 +535,54 @@ class IIFLAPIService:
                     "desc": "symbol_from_to_ddmmyyyy"
                 })
 
-        # 4) Include exchange hint (NSEEQ) with symbol
+        # 3b) Alternative date format: dd-mm-yyyy with fromDate/toDate
+        for sym in symbol_variants:
+            for iv in interval_variants:
+                attempts.append({
+                    "payload": {"symbol": sym, "interval": iv, "fromDate": dd_mm_yyyy_from, "toDate": dd_mm_yyyy_to},
+                    "desc": "symbol_fromDate_toDate_ddmmyyyy"
+                })
+
+        # 4) Include exchange hints with symbol
         for sym in symbol_variants:
             for iv in interval_variants:
                 attempts.append({
                     "payload": {"symbol": sym, "exchange": "NSEEQ", "interval": iv, "fromDate": yyyy_mm_dd_from, "toDate": yyyy_mm_dd_to},
                     "desc": "symbol_exchange_fromDate_toDate"
+                })
+        # 4a) exchange 'NSE' + series 'EQ'
+        for sym in symbol_variants:
+            for iv in interval_variants:
+                attempts.append({
+                    "payload": {"symbol": sym, "exchange": "NSE", "series": "EQ", "interval": iv, "fromDate": yyyy_mm_dd_from, "toDate": yyyy_mm_dd_to},
+                    "desc": "symbol_exchange_series_fromDate_toDate"
+                })
+        # 4b) exchangeSegment flavor
+        for sym in symbol_variants:
+            for iv in interval_variants:
+                attempts.append({
+                    "payload": {"symbol": sym, "exchange": "NSE", "exchangeSegment": "NSECM", "interval": iv, "fromDate": yyyy_mm_dd_from, "toDate": yyyy_mm_dd_to},
+                    "desc": "symbol_exchange_exchangeSegment_fromDate_toDate"
+                })
+        # 4c) exch/exchType short keys commonly used in some IIFL specs
+        for sym in symbol_variants:
+            for iv in interval_variants:
+                attempts.append({
+                    "payload": {"symbol": sym, "exch": "N", "exchType": "C", "interval": iv, "fromDate": yyyy_mm_dd_from, "toDate": yyyy_mm_dd_to},
+                    "desc": "symbol_exch_exchType_fromDate_toDate"
+                })
+        # 4d) startDate/endDate key variants
+        for sym in symbol_variants:
+            for iv in interval_variants:
+                attempts.append({
+                    "payload": {"symbol": sym, "interval": iv, "startDate": yyyy_mm_dd_from, "endDate": yyyy_mm_dd_to},
+                    "desc": "symbol_startDate_endDate"
+                })
+        for sym in symbol_variants:
+            for iv in interval_variants:
+                attempts.append({
+                    "payload": {"symbol": sym, "interval": iv, "startDate": dd_mm_yyyy_from, "endDate": dd_mm_yyyy_to},
+                    "desc": "symbol_startDate_endDate_ddmmyyyy"
                 })
 
         # 5) Numeric instrumentId variant if the provided symbol is numeric
@@ -538,6 +595,11 @@ class IIFLAPIService:
                 attempts.append({
                     "payload": {"instrumentId": str(normalized_symbol), "interval": iv, "from": yyyy_mm_dd_from, "to": yyyy_mm_dd_to},
                     "desc": "instrumentId_from_to"
+                })
+                # instrument key alias
+                attempts.append({
+                    "payload": {"instrument": str(normalized_symbol), "interval": iv, "fromDate": yyyy_mm_dd_from, "toDate": yyyy_mm_dd_to},
+                    "desc": "instrument_fromDate_toDate"
                 })
 
         # Execute attempts sequentially until one yields data
