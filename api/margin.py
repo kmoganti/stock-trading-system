@@ -3,8 +3,8 @@ Margin calculation API endpoints
 """
 
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, validator
+from typing import Optional, Literal
 import logging
 
 from services.data_fetcher import DataFetcher
@@ -15,12 +15,31 @@ router = APIRouter()
 
 class MarginCalculationRequest(BaseModel):
     symbol: str
-    quantity: int
-    transaction_type: str  # BUY or SELL
+    quantity: int 
+    transaction_type: Literal["BUY", "SELL"]
     price: Optional[float] = None
-    product: str = "NORMAL"  # NORMAL, INTRADAY, DELIVERY, BNPL
-    exchange: str = "NSEEQ"  # NSEEQ, NSEFO, BSEEQ, etc.
-    order_type: str = "MARKET"  # MARKET, LIMIT, SL, SLM
+    product: Literal["NORMAL", "INTRADAY", "DELIVERY", "BNPL"] = "NORMAL"
+    exchange: Literal["NSEEQ", "NSEFO", "BSEEQ"] = "NSEEQ"
+    order_type: Literal["MARKET", "LIMIT", "SL", "SLM"] = "MARKET"
+
+    @validator('price', always=True)
+    def price_required_for_limit_and_sl_orders(cls, v, values):
+        """Ensure price is provided for order types that require it."""
+        order_type = values.get('order_type')
+        if order_type in ('LIMIT', 'SL') and v is None:
+            raise ValueError('Price is required for LIMIT and SL order types.')
+        if order_type == 'MARKET' and v is not None:
+            # This is a warning, not an error, as it's not critical but good to know.
+            logger.warning("Price is provided for a MARKET order but will be ignored by the broker.")
+        return v
+
+    @validator('quantity')
+    def quantity_must_be_positive(cls, v):
+        """Ensure quantity is a positive integer."""
+        if v <= 0:
+            raise ValueError('Quantity must be a positive integer.')
+        return v
+
 
 async def get_data_fetcher():
     """Dependency to get DataFetcher instance"""

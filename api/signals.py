@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Literal
 import logging
+from pydantic import BaseModel, Field, validator
 from models.database import get_db
 from models.signals import Signal, SignalStatus
 from services.order_manager import OrderManager
@@ -21,43 +22,47 @@ async def get_order_manager(db: AsyncSession = Depends(get_db)) -> OrderManager:
     risk_service = RiskService(data_fetcher, db)
     return OrderManager(iifl, risk_service, data_fetcher, db)
 
+class SignalCreationRequest(BaseModel):
+    symbol: str = Field(..., description="Trading symbol, e.g., 'RELIANCE'")
+    signal_type: Literal["buy", "sell", "exit"]
+    entry_price: float = Field(..., gt=0, description="The price at which the signal is generated")
+    stop_loss: Optional[float] = Field(None, gt=0)
+    take_profit: Optional[float] = Field(None, gt=0)
+    reason: str = "Manual/API generated"
+    strategy: str = "manual"
+    confidence: float = Field(0.7, ge=0, le=1)
+
+    @validator('stop_loss', 'take_profit', always=True)
+    def check_sl_tp_against_entry(cls, v, values, field):
+        """Validate that stop-loss and take-profit are logical relative to the entry price."""
+        if v is None:
+            return v
+        
+        entry_price = values.get('entry_price')
+        signal_type = values.get('signal_type')
+
+        if entry_price and signal_type == 'buy':
+            if field.name == 'stop_loss' and v >= entry_price:
+                raise ValueError('For a BUY signal, stop_loss must be below the entry_price.')
+            if field.name == 'take_profit' and v <= entry_price:
+                raise ValueError('For a BUY signal, take_profit must be above the entry_price.')
+        elif entry_price and signal_type == 'sell':
+            if field.name == 'stop_loss' and v <= entry_price:
+                raise ValueError('For a SELL signal, stop_loss must be above the entry_price.')
+            if field.name == 'take_profit' and v >= entry_price:
+                raise ValueError('For a SELL signal, take_profit must be below the entry_price.')
+        return v
+
 @router.post("")
 async def create_signal(
-    payload: Dict[str, Any],
+    payload: SignalCreationRequest,
     order_manager: OrderManager = Depends(get_order_manager)
 ) -> Dict[str, Any]:
-    """Create a signal and queue for approval (dry-run friendly).
-
-    Expected payload keys: symbol, signal_type, entry_price/price, stop_loss, take_profit, reason, strategy, confidence
-    """
+    """Create a signal and queue for approval (dry-run friendly)."""
     try:
-        symbol = payload.get("symbol")
-        signal_type = payload.get("signal_type")
-        if not symbol or not signal_type:
-            raise HTTPException(status_code=400, detail="symbol and signal_type are required")
-
-        # Normalize fields
-        entry_price = payload.get("entry_price", payload.get("price"))
-        if entry_price is None:
-            raise HTTPException(status_code=400, detail="entry_price (or price) is required")
-
         from models.signals import SignalType as ModelSignalType
-
-        try:
-            stype = ModelSignalType(signal_type.lower())
-        except Exception:
-            raise HTTPException(status_code=400, detail="invalid signal_type; expected buy/sell/exit")
-
-        signal_data = {
-            "symbol": symbol.upper(),
-            "signal_type": stype,
-            "entry_price": float(entry_price),
-            "stop_loss": payload.get("stop_loss"),
-            "take_profit": payload.get("take_profit"),
-            "reason": payload.get("reason", "Manual/Backtest generated"),
-            "strategy": payload.get("strategy", "manual"),
-            "confidence": float(payload.get("confidence", 0.7)),
-        }
+        signal_data = payload.dict()
+        signal_data["signal_type"] = ModelSignalType(payload.signal_type)
 
         # Create DB record
         signal = await order_manager.create_signal(signal_data)
