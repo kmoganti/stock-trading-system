@@ -3,7 +3,10 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 import logging
 from .iifl_api import IIFLAPIService
-from .watchlist import WatchlistService
+try:
+    from .watchlist import WatchlistService  # type: ignore
+except Exception:
+    WatchlistService = None  # type: ignore
 
 # Optional pandas import
 try:
@@ -57,7 +60,17 @@ class DataFetcher:
                 return pd.DataFrame()
 
             df = pd.DataFrame(raw_data)
-            
+
+            # Ensure there is a datetime column named 'date'
+            if 'date' not in df.columns:
+                for candidate in ['time', 'timestamp', 'datetime']:
+                    if candidate in df.columns:
+                        df['date'] = df[candidate]
+                        break
+            if 'date' not in df.columns:
+                logger.error("Historical data missing 'date'/'time' field after normalization")
+                return pd.DataFrame()
+
             # Standardize and clean the DataFrame
             df['date'] = pd.to_datetime(df['date'])
             df.set_index('date', inplace=True)
@@ -92,19 +105,33 @@ class DataFetcher:
             # Fetch from IIFL API
             result = await self.iifl.get_historical_data(symbol, interval, from_date, to_date)
             
-            if result and result.get("status") == "Ok":
-                data = result.get("result", [])
-                if data:
+            # Accept both 'status' and legacy 'stat' fields
+            ok_status = bool(result) and isinstance(result, dict) and (
+                result.get("status") == "Ok" or result.get("stat") == "Ok"
+            )
+            if ok_status:
+                # Data may be under 'result' or 'data'
+                payload_list = result.get("result")
+                if not isinstance(payload_list, list):
+                    payload_list = result.get("data", [])
+                if payload_list:
                     # Standardize data format
-                    standardized_data = []
-                    for item in data:
+                    standardized_data: List[Dict] = []
+                    for item in payload_list:
+                        item = item or {}
                         standardized_item = {k.lower(): v for k, v in item.items()}
+                        # Normalize date field
+                        if 'date' not in standardized_item:
+                            for candidate in ['time', 'timestamp', 'datetime']:
+                                if candidate in standardized_item:
+                                    standardized_item['date'] = standardized_item[candidate]
+                                    break
                         standardized_data.append(standardized_item)
 
                     self._set_cache(cache_key, standardized_data, 300)
                     return standardized_data
             elif result:
-                error_message = result.get('message') or result.get('emsg', 'Unknown API error')
+                error_message = result.get('message') or result.get('emsg', 'Unknown API error') if isinstance(result, dict) else 'Unknown API error'
                 logger.warning(f"Failed to fetch historical data for {symbol}: {error_message}")
             
             return []
@@ -298,7 +325,7 @@ class DataFetcher:
                     
                 # Mark all holding symbols as 'hold' in watchlist if DB is available
                 try:
-                    if self._db and processed_holdings:
+                    if self._db and processed_holdings and WatchlistService is not None:
                         symbols = [h.get("symbol") for h in processed_holdings if h.get("symbol")]
                         if symbols:
                             service = WatchlistService(self._db)

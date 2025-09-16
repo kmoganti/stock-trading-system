@@ -14,6 +14,13 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from services.iifl_api import IIFLAPIService
 
+# Ensure env is loaded even without pydantic settings
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
 async def debug_historical_data():
     """Debug historical data API response"""
     print("=== IIFL Historical Data Debug ===")

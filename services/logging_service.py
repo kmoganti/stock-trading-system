@@ -8,7 +8,13 @@ import traceback
 from pathlib import Path
 import os
 from datetime import timedelta
-from config.settings import get_settings
+try:
+    from config.settings import get_settings  # type: ignore
+except Exception:
+    def get_settings():
+        class _S:
+            log_retention_days = 14
+        return _S()
 
 class TradingLogger:
     """Centralized logging service for the trading system"""

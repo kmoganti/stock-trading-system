@@ -41,12 +41,12 @@ class BacktestService:
             end_dt = datetime.strptime(end_date, "%Y-%m-%d")
             days = (end_dt - start_dt).days + 50  # Add buffer for indicators
             
-            df = await self.data_fetcher.get_historical_data(symbol, "1D", days)
+            df = await self.data_fetcher.get_historical_data_df(symbol, "1D", start_date, end_date)
             
             if df is None or df.empty:
                 return {"error": f"No data available for {symbol}"}
             
-            # Filter data to backtest period
+            # Filter data to backtest period (ensure index is datetime)
             df = df[(df.index >= start_dt) & (df.index <= end_dt)]
             
             if len(df) < 50:
