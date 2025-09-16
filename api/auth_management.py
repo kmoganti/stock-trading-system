@@ -27,7 +27,7 @@ async def get_auth_status():
         status = AuthStatus(
             is_authenticated=service.session_token is not None and service.token_expiry is not None,
             token_expiry=service.token_expiry,
-            auth_code_expiry=service.auth_code_expiry,
+            auth_code_expiry=getattr(service, 'auth_code_expiry', None),
             last_error=None
         )
         logger.info(f"Auth status: authenticated={status.is_authenticated}")
@@ -55,7 +55,7 @@ async def update_auth_code(auth_data: AuthCodeUpdate):
         
         # Update auth code and env file
         service.auth_code = auth_code
-        service.auth_code_expiry = datetime.now() + timedelta(hours=23)  # Set new expiry
+        service._initialize_auth_expiry()
         service._update_env_auth_code(auth_code)
         
         # Clear existing session to force re-authentication
