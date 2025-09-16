@@ -50,31 +50,33 @@ async def debug_historical_data():
         print("\n" + "="*50)
         print(f"Testing with symbol format: '{test_symbol}'")
         
-        data = {
+        payload_preview = {
             "symbol": test_symbol,
             "interval": "1D",
             "fromDate": from_date,
             "toDate": to_date
         }
-        
-        print(f"Request Payload: {json.dumps(data, indent=2)}")
-        
-        # We call _make_api_request directly to bypass any logic in get_historical_data
-        test_result = await iifl_service._make_api_request("POST", "/marketdata/historicaldata", data)
-        
-        print(f"Raw API Response: {json.dumps(test_result, indent=2) if test_result else 'None'}")
-        
-        if test_result:
-            status = test_result.get("status", "Unknown")
-            message = test_result.get("message", "No message")
-            result_data = test_result.get("result", [])
-            
-            if status == "Ok" and isinstance(result_data, list) and result_data:
-                print(f"\n[SUCCESS] This format worked! Received {len(result_data)} records.")
-                print(f"Sample record: {result_data[0]}")
-                break # Stop on first success
+        print(f"Request Payload (initial intent): {json.dumps(payload_preview, indent=2)}")
+
+        # Use high-level method with enhanced fallbacks
+        normalized = await iifl_service.get_historical_data(test_symbol, "1D", from_date, to_date)
+
+        if isinstance(normalized, dict):
+            # Show raw when available
+            print(f"Raw API Response: {json.dumps(normalized, indent=2)}")
+            status = normalized.get("status", normalized.get("stat", "Unknown"))
+            message = normalized.get("message", normalized.get("emsg", "No message"))
+            result_data = normalized.get("result") or normalized.get("data") or normalized.get("resultData") or []
+            if isinstance(result_data, list) and result_data:
+                print(f"\n[SUCCESS] Received {len(result_data)} records (dict form). Sample: {result_data[0]}")
+                break
             else:
                 print(f"\n[FAILED] Status: {status}, Message: {message}")
+        elif isinstance(normalized, list):
+            print(f"\n[SUCCESS] Received {len(normalized)} records (standardized list). Sample: {normalized[0] if normalized else {}}")
+            break
+        else:
+            print("\n[FAILED] No data returned.")
 
 if __name__ == "__main__":
     asyncio.run(debug_historical_data())
