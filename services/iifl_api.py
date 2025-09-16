@@ -304,13 +304,28 @@ class IIFLAPIService:
                     )
                     
                     # Log response details
+                    status_field = None
+                    message_field = None
+                    result_count = None
+                    if isinstance(response_data, dict):
+                        status_field = response_data.get("status") or response_data.get("stat")
+                        message_field = response_data.get("message") or response_data.get("emsg")
+                        # Try common list containers
+                        for key in ["result", "data", "resultData"]:
+                            value = response_data.get(key)
+                            if isinstance(value, list):
+                                result_count = len(value)
+                                break
                     trading_logger.log_system_event("iifl_api_response", {
                         "url": url,
                         "method": method.upper(),
                         "status_code": response.status_code,
                         "response_time_ms": response_time * 1000,
                         "response_keys": list(response_data.keys()) if isinstance(response_data, dict) else "non_dict",
-                        "success": response.status_code == 200
+                        "success": response.status_code == 200,
+                        "status": status_field,
+                        "message_preview": (str(message_field)[:120] + ("..." if message_field and len(str(message_field)) > 120 else "")) if message_field else None,
+                        "result_count": result_count
                     })
                     
                 except json.JSONDecodeError:
@@ -444,7 +459,56 @@ class IIFLAPIService:
             "toDate": to_date
         }
         
-        return await self._make_api_request("POST", "/marketdata/historicaldata", data)
+        primary_response = await self._make_api_request("POST", "/marketdata/historicaldata", data)
+        
+        # If primary response is ok or has data, return it
+        def _has_payload(resp: Optional[Dict]) -> bool:
+            if not isinstance(resp, dict):
+                return False
+            # Accept Ok flags
+            if resp.get("status") == "Ok" or resp.get("stat") == "Ok":
+                return True
+            # Or presence of list payload
+            for key in ["result", "data", "resultData"]:
+                value = resp.get(key)
+                if isinstance(value, list) and len(value) > 0:
+                    return True
+            return False
+
+        if _has_payload(primary_response):
+            return primary_response
+
+        # Try fallback with -EQ suffix for equity symbols (if not numeric and not already suffixed)
+        is_numeric = False
+        try:
+            int(str(symbol).strip())
+            is_numeric = True
+        except ValueError:
+            is_numeric = False
+        should_try_fallback = (not is_numeric) and (not str(normalized_symbol).endswith("-EQ"))
+        
+        if should_try_fallback:
+            fallback_symbol = f"{normalized_symbol}-EQ"
+            fallback_data = {**data, "symbol": fallback_symbol}
+            trading_logger.log_system_event("iifl_hist_fallback_attempt", {
+                "original_symbol": normalized_symbol,
+                "fallback_symbol": fallback_symbol,
+                "interval": interval,
+                "from": from_date,
+                "to": to_date
+            })
+            fallback_response = await self._make_api_request("POST", "/marketdata/historicaldata", fallback_data)
+            if _has_payload(fallback_response):
+                trading_logger.log_system_event("iifl_hist_fallback_success", {
+                    "used_symbol": fallback_symbol
+                })
+                return fallback_response
+            else:
+                trading_logger.log_system_event("iifl_hist_fallback_no_data", {
+                    "used_symbol": fallback_symbol
+                })
+        
+        return primary_response
     
     async def get_market_quotes(self, instruments: List[str]) -> Optional[Dict]:
         """Get real-time market quotes"""
