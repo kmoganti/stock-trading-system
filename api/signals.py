@@ -1,5 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Depends, HTTPException, Query, Security
+from sqlalchemy.ext.asyncio import AsyncSession 
 from typing import Dict, Any, List, Optional, Literal
 import logging
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -11,6 +11,7 @@ from services.risk import RiskService
 from services.data_fetcher import DataFetcher
 from services.strategy import StrategyService
 from services.watchlist import WatchlistService
+from .auth import get_api_key
 
 router = APIRouter(prefix="/api/signals", tags=["signals"])
 logger = logging.getLogger(__name__)
@@ -238,6 +239,7 @@ async def generate_historic_signals(
 @router.post("/{signal_id}/approve")
 async def approve_signal(
     signal_id: int,
+    api_key: str = Security(get_api_key),
     order_manager: OrderManager = Depends(get_order_manager)
 ) -> Dict[str, Any]:
     """Approve a pending signal"""
@@ -260,6 +262,7 @@ async def approve_signal(
 async def reject_signal(
     signal_id: int,
     reason: str = "Manual rejection",
+    api_key: str = Security(get_api_key),
     order_manager: OrderManager = Depends(get_order_manager)
 ) -> Dict[str, Any]:
     """Reject a pending signal"""
@@ -281,6 +284,7 @@ async def reject_signal(
 @router.post("/{signal_id}/expire")
 async def expire_signal(
     signal_id: int,
+    api_key: str = Security(get_api_key),
     order_manager: OrderManager = Depends(get_order_manager)
 ) -> Dict[str, Any]:
     """Manually expire a signal"""

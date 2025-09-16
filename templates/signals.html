@@ -187,6 +187,10 @@ document.addEventListener('alpine:init', () => {
         showModal: false,
         selectedSignal: null,
         
+        // IMPORTANT: For this to work, you must store your API key in the browser's localStorage.
+        // Open your browser's developer console and run:
+        // localStorage.setItem('tradingApiKey', 'YOUR_SECRET_KEY_HERE');
+        apiKey: localStorage.getItem('tradingApiKey'),
         async init() {
             await this.loadSignals();
             // Refresh every 15 seconds
@@ -219,7 +223,10 @@ document.addEventListener('alpine:init', () => {
         async approveSignal(signalId) {
             try {
                 const response = await fetch(`/api/signals/${signalId}/approve`, {
-                    method: 'POST'
+                    method: 'POST',
+                    headers: {
+                        'X-API-Key': this.apiKey
+                    }
                 });
                 
                 const result = await response.json();
@@ -240,7 +247,10 @@ document.addEventListener('alpine:init', () => {
         async rejectSignal(signalId) {
             try {
                 const response = await fetch(`/api/signals/${signalId}/reject`, {
-                    method: 'POST'
+                    method: 'POST',
+                    headers: {
+                        'X-API-Key': this.apiKey
+                    }
                 });
                 
                 const result = await response.json();
