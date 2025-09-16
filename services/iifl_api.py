@@ -430,16 +430,12 @@ class IIFLAPIService:
     # Market Data
     async def get_historical_data(self, symbol: str, interval: str, from_date: str, to_date: str) -> Optional[Dict]:
         """Get historical OHLCV data"""
-        # Preserve numeric instrument IDs; only normalize string equity symbols
+        # Preserve numeric instrument IDs; for string symbols just uppercase without suffixes
         normalized_symbol = symbol
         try:
-            # If this succeeds, we have a numeric code; do not alter
             int(str(symbol).strip())
         except ValueError:
-            # Non-numeric, normalize to uppercase and ensure -EQ suffix
             normalized_symbol = str(symbol).upper()
-            if not normalized_symbol.endswith("-EQ"):
-                normalized_symbol = f"{normalized_symbol}-EQ"
 
         data = {
             "symbol": normalized_symbol,
@@ -447,7 +443,7 @@ class IIFLAPIService:
             "fromDate": from_date,
             "toDate": to_date
         }
-            
+        
         return await self._make_api_request("POST", "/marketdata/historicaldata", data)
     
     async def get_market_quotes(self, instruments: List[str]) -> Optional[Dict]:
