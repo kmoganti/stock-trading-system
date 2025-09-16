@@ -452,63 +452,115 @@ class IIFLAPIService:
         except ValueError:
             normalized_symbol = str(symbol).upper()
 
-        data = {
-            "symbol": normalized_symbol,
-            "interval": interval,
-            "fromDate": from_date,
-            "toDate": to_date
-        }
-        
-        primary_response = await self._make_api_request("POST", "/marketdata/historicaldata", data)
-        
-        # If primary response is ok or has data, return it
         def _has_payload(resp: Optional[Dict]) -> bool:
             if not isinstance(resp, dict):
                 return False
-            # Accept Ok flags
             if resp.get("status") == "Ok" or resp.get("stat") == "Ok":
                 return True
-            # Or presence of list payload
             for key in ["result", "data", "resultData"]:
                 value = resp.get(key)
                 if isinstance(value, list) and len(value) > 0:
                     return True
             return False
 
-        if _has_payload(primary_response):
-            return primary_response
+        # Build a conservative list of attempts to maximize compatibility while limiting API calls
+        attempts: list[dict] = []
 
-        # Try fallback with -EQ suffix for equity symbols (if not numeric and not already suffixed)
-        is_numeric = False
+        # Date variants
+        yyyy_mm_dd_from = from_date
+        yyyy_mm_dd_to = to_date
         try:
-            int(str(symbol).strip())
-            is_numeric = True
+            # Convert to dd-mm-yyyy as a fallback format if needed
+            from_dt = datetime.strptime(from_date, "%Y-%m-%d").strftime("%d-%m-%Y")
+            to_dt = datetime.strptime(to_date, "%Y-%m-%d").strftime("%d-%m-%Y")
+            dd_mm_yyyy_from = from_dt
+            dd_mm_yyyy_to = to_dt
+        except Exception:
+            dd_mm_yyyy_from = from_date
+            dd_mm_yyyy_to = to_date
+
+        # Interval variants (keep original first)
+        interval_variants = [interval]
+        if interval.upper() == "1D":
+            interval_variants.extend(["DAY", "1d", "day"])
+
+        # Symbol candidates
+        is_numeric_symbol = False
+        try:
+            int(str(normalized_symbol))
+            is_numeric_symbol = True
         except ValueError:
-            is_numeric = False
-        should_try_fallback = (not is_numeric) and (not str(normalized_symbol).endswith("-EQ"))
-        
-        if should_try_fallback:
-            fallback_symbol = f"{normalized_symbol}-EQ"
-            fallback_data = {**data, "symbol": fallback_symbol}
-            trading_logger.log_system_event("iifl_hist_fallback_attempt", {
-                "original_symbol": normalized_symbol,
-                "fallback_symbol": fallback_symbol,
-                "interval": interval,
-                "from": from_date,
-                "to": to_date
+            is_numeric_symbol = False
+
+        symbol_variants = [normalized_symbol]
+        if not is_numeric_symbol and not str(normalized_symbol).endswith("-EQ"):
+            symbol_variants.append(f"{normalized_symbol}-EQ")
+
+        # 1) Primary: symbol + fromDate/toDate
+        for sym in symbol_variants:
+            for iv in interval_variants:
+                attempts.append({
+                    "payload": {"symbol": sym, "interval": iv, "fromDate": yyyy_mm_dd_from, "toDate": yyyy_mm_dd_to},
+                    "desc": "symbol_fromDate_toDate"
+                })
+
+        # 2) Alternative keys: symbol + from/to
+        for sym in symbol_variants:
+            for iv in interval_variants:
+                attempts.append({
+                    "payload": {"symbol": sym, "interval": iv, "from": yyyy_mm_dd_from, "to": yyyy_mm_dd_to},
+                    "desc": "symbol_from_to"
+                })
+
+        # 3) Alternative date format: dd-mm-yyyy with from/to
+        for sym in symbol_variants:
+            for iv in interval_variants:
+                attempts.append({
+                    "payload": {"symbol": sym, "interval": iv, "from": dd_mm_yyyy_from, "to": dd_mm_yyyy_to},
+                    "desc": "symbol_from_to_ddmmyyyy"
+                })
+
+        # 4) Include exchange hint (NSEEQ) with symbol
+        for sym in symbol_variants:
+            for iv in interval_variants:
+                attempts.append({
+                    "payload": {"symbol": sym, "exchange": "NSEEQ", "interval": iv, "fromDate": yyyy_mm_dd_from, "toDate": yyyy_mm_dd_to},
+                    "desc": "symbol_exchange_fromDate_toDate"
+                })
+
+        # 5) Numeric instrumentId variant if the provided symbol is numeric
+        if is_numeric_symbol:
+            for iv in interval_variants:
+                attempts.append({
+                    "payload": {"instrumentId": str(normalized_symbol), "interval": iv, "fromDate": yyyy_mm_dd_from, "toDate": yyyy_mm_dd_to},
+                    "desc": "instrumentId_fromDate_toDate"
+                })
+                attempts.append({
+                    "payload": {"instrumentId": str(normalized_symbol), "interval": iv, "from": yyyy_mm_dd_from, "to": yyyy_mm_dd_to},
+                    "desc": "instrumentId_from_to"
+                })
+
+        # Execute attempts sequentially until one yields data
+        last_response: Optional[Dict] = None
+        for idx, attempt in enumerate(attempts, start=1):
+            payload = attempt["payload"]
+            desc = attempt["desc"]
+            trading_logger.log_system_event("iifl_hist_attempt", {
+                "attempt": idx,
+                "variant": desc,
+                "payload_keys": list(payload.keys())
             })
-            fallback_response = await self._make_api_request("POST", "/marketdata/historicaldata", fallback_data)
-            if _has_payload(fallback_response):
-                trading_logger.log_system_event("iifl_hist_fallback_success", {
-                    "used_symbol": fallback_symbol
+            response = await self._make_api_request("POST", "/marketdata/historicaldata", payload)
+            last_response = response
+            if _has_payload(response):
+                trading_logger.log_system_event("iifl_hist_success", {
+                    "attempt": idx,
+                    "variant": desc
                 })
-                return fallback_response
-            else:
-                trading_logger.log_system_event("iifl_hist_fallback_no_data", {
-                    "used_symbol": fallback_symbol
-                })
-        
-        return primary_response
+                return response
+
+        # If none succeeded, return the last response for visibility
+        return last_response
     
     async def get_market_quotes(self, instruments: List[str]) -> Optional[Dict]:
         """Get real-time market quotes"""
