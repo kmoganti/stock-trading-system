@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from contextlib import asynccontextmanager
+import time
 
 from config.settings import get_settings
 from models.database import init_db, close_db
@@ -22,6 +23,8 @@ from services.logging_service import trading_logger
 import os
 from telegram_bot.bot import TelegramBot
 from telegram_bot.handlers import setup_handlers
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 # Ensure logs directory exists
 os.makedirs('logs', exist_ok=True)
@@ -32,6 +35,30 @@ os.makedirs('logs', exist_ok=True)
 logging.getLogger('watchfiles').setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+
+def init_sentry(settings):
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.asgi import SentryAsgiMiddleware
+        from sentry_sdk.integrations.logging import LoggingIntegration
+        if settings.sentry_dsn:
+            sentry_logging = LoggingIntegration(
+                level=logging.INFO,
+                event_level=logging.ERROR
+            )
+            sentry_sdk.init(
+                dsn=settings.sentry_dsn,
+                traces_sample_rate=settings.sentry_traces_sample_rate or 0.0,
+                profiles_sample_rate=settings.sentry_profiles_sample_rate or 0.0,
+                integrations=[sentry_logging],
+                environment=settings.environment,
+            )
+            trading_logger.enable_sentry()
+            logger.info("Sentry initialized")
+            return SentryAsgiMiddleware
+    except Exception as e:
+        logger.warning(f"Sentry initialization failed or disabled: {str(e)}")
+    return None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -59,6 +86,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to start Telegram bot: {str(e)}")
     
+    # Schedule daily housekeeping (log pruning) at 00:30
+    try:
+        scheduler = AsyncIOScheduler()
+        scheduler.add_job(
+            lambda: asyncio.create_task(trading_logger.daily_housekeeping()),
+            CronTrigger(hour=0, minute=30),
+            name="daily_housekeeping"
+        )
+        scheduler.start()
+        app.state.scheduler = scheduler
+        logger.info("Scheduler started for daily housekeeping")
+    except Exception as e:
+        logger.warning(f"Failed to start scheduler: {str(e)}")
+
     yield
     
     # Shutdown
@@ -70,6 +111,12 @@ async def lifespan(app: FastAPI):
             logger.info("Telegram bot stopped")
     except Exception as e:
         logger.error(f"Error stopping Telegram bot: {str(e)}")
+    try:
+        if getattr(app.state, "scheduler", None):
+            app.state.scheduler.shutdown(wait=False)
+            logger.info("Scheduler stopped")
+    except Exception as e:
+        logger.error(f"Error stopping scheduler: {str(e)}")
     await close_db()
     logger.info("Database connections closed")
     trading_logger.log_system_event("database_closed")
@@ -91,6 +138,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Initialize Sentry (if configured)
+_settings_for_sentry = get_settings()
+SentryAsgiMiddleware = init_sentry(_settings_for_sentry)
+if SentryAsgiMiddleware is not None:
+    try:
+        app.add_middleware(SentryAsgiMiddleware)
+    except Exception as e:
+        logger.warning(f"Failed to add Sentry middleware: {str(e)}")
+
 # Include API routers
 app.include_router(system_router)
 app.include_router(signals_router)
@@ -102,6 +158,36 @@ app.include_router(settings_router)
 app.include_router(auth_router)
 app.include_router(margin_router, prefix="/api/margin", tags=["margin"])
 app.include_router(watchlist_router)
+
+# HTTP logging middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.perf_counter()
+    try:
+        response = await call_next(request)
+        duration = time.perf_counter() - start
+        err: str = None
+        if response.status_code >= 500:
+            err = f"Server error {response.status_code}"
+        trading_logger.log_api_call(
+            endpoint=str(request.url.path),
+            method=request.method,
+            status_code=response.status_code,
+            response_time=duration,
+            error=err
+        )
+        return response
+    except Exception as e:
+        duration = time.perf_counter() - start
+        trading_logger.log_api_call(
+            endpoint=str(request.url.path),
+            method=request.method,
+            status_code=500,
+            response_time=duration,
+            error=str(e)
+        )
+        trading_logger.log_error("api", e, {"path": str(request.url.path), "method": request.method})
+        raise
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")

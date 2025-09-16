@@ -3,7 +3,7 @@ Margin calculation API endpoints
 """
 
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, field_validator, model_validator
 from typing import Optional, Literal
 import logging
 
@@ -22,18 +22,17 @@ class MarginCalculationRequest(BaseModel):
     exchange: Literal["NSEEQ", "NSEFO", "BSEEQ"] = "NSEEQ"
     order_type: Literal["MARKET", "LIMIT", "SL", "SLM"] = "MARKET"
 
-    @validator('price', always=True)
-    def price_required_for_limit_and_sl_orders(cls, v, values):
+    @model_validator(mode='after')
+    def price_required_for_limit_and_sl_orders(self):
         """Ensure price is provided for order types that require it."""
-        order_type = values.get('order_type')
-        if order_type in ('LIMIT', 'SL') and v is None:
-            raise ValueError('Price is required for LIMIT and SL order types.')
-        if order_type == 'MARKET' and v is not None:
+        if self.order_type in ("LIMIT", "SL") and self.price is None:
+            raise ValueError("Price is required for LIMIT and SL order types.")
+        if self.order_type == "MARKET" and self.price is not None:
             # This is a warning, not an error, as it's not critical but good to know.
             logger.warning("Price is provided for a MARKET order but will be ignored by the broker.")
-        return v
+        return self
 
-    @validator('quantity')
+    @field_validator('quantity')
     def quantity_must_be_positive(cls, v):
         """Ensure quantity is a positive integer."""
         if v <= 0:

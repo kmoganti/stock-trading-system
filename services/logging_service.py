@@ -1,11 +1,14 @@
 import logging
 import logging.handlers
 import asyncio
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from datetime import datetime
 import json
 import traceback
 from pathlib import Path
+import os
+from datetime import timedelta
+from config.settings import get_settings
 
 class TradingLogger:
     """Centralized logging service for the trading system"""
@@ -20,6 +23,8 @@ class TradingLogger:
         self.risk_logger = self._setup_logger("risk", "risk_events.log")
         self.api_logger = self._setup_logger("api", "api_calls.log")
         self.error_logger = self._setup_logger("errors", "errors.log", level=logging.ERROR)
+        self._sentry_enabled = False
+        self._telegram_notify = None
     
     def _setup_logger(self, name: str, filename: str, level: int = logging.INFO) -> logging.Logger:
         """Setup individual logger with rotating file handler"""
@@ -53,6 +58,12 @@ class TradingLogger:
         logger.addHandler(console_handler)
         
         return logger
+
+    def enable_sentry(self):
+        self._sentry_enabled = True
+
+    def set_telegram_notifier(self, notifier):
+        self._telegram_notify = notifier
     
     def log_trade(self, signal_id: str, action: str, symbol: str, 
                   quantity: int, price: float, details: Dict[str, Any] = None):
@@ -109,6 +120,19 @@ class TradingLogger:
         }
         
         self.error_logger.error(f"ERROR: {json.dumps(error_data, indent=2)}")
+        try:
+            if self._sentry_enabled:
+                import sentry_sdk
+                sentry_sdk.capture_exception(error)
+        except Exception:
+            pass
+        try:
+            if self._telegram_notify and isinstance(error, Exception):
+                # only critical error notifications
+                message = f"Critical error in {component}: {type(error).__name__} - {str(error)[:300]}"
+                asyncio.create_task(self._telegram_notify(message))
+        except Exception:
+            pass
     
     def log_system_event(self, event: str, details: Dict[str, Any] = None):
         """Log system-level events"""
@@ -119,6 +143,34 @@ class TradingLogger:
         }
         
         self.main_logger.info(f"SYSTEM: {json.dumps(event_data)}")
+
+    def prune_old_logs(self, retention_days: int = 14) -> List[str]:
+        """Delete log files older than retention_days; return list of removed files."""
+        removed: List[str] = []
+        try:
+            cutoff = datetime.now() - timedelta(days=retention_days)
+            for file in self.log_dir.glob("*.log"):
+                try:
+                    mtime = datetime.fromtimestamp(os.path.getmtime(file))
+                    if mtime < cutoff:
+                        file.unlink(missing_ok=True)
+                        removed.append(str(file))
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return removed
+
+    async def daily_housekeeping(self):
+        """Run housekeeping tasks like pruning logs based on settings."""
+        try:
+            settings = get_settings()
+            retention = getattr(settings, "log_retention_days", 14) or 14
+            removed = self.prune_old_logs(retention)
+            if removed:
+                self.main_logger.info(f"Housekeeping pruned logs: {removed}")
+        except Exception as e:
+            self.error_logger.error(f"Housekeeping error: {str(e)}")
 
 # Global logger instance
 trading_logger = TradingLogger()

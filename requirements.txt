@@ -41,6 +41,7 @@ python-dotenv==1.0.0
 
 # Logging
 structlog==23.2.0
+sentry-sdk==2.13.0
 
 # WebSocket
 websockets==12.0
