@@ -475,19 +475,35 @@ class IIFLAPIService:
         yyyy_mm_dd_from = from_date
         yyyy_mm_dd_to = to_date
         try:
-            # Convert to dd-mm-yyyy as a fallback format if needed
-            from_dt = datetime.strptime(from_date, "%Y-%m-%d").strftime("%d-%m-%Y")
-            to_dt = datetime.strptime(to_date, "%Y-%m-%d").strftime("%d-%m-%Y")
-            dd_mm_yyyy_from = from_dt
-            dd_mm_yyyy_to = to_dt
+            # Convert to dd-mm-yyyy as a fallback format
+            from_dt_parsed = datetime.strptime(from_date, "%Y-%m-%d")
+            to_dt_parsed = datetime.strptime(to_date, "%Y-%m-%d")
+            dd_mm_yyyy_from = from_dt_parsed.strftime("%d-%m-%Y")
+            dd_mm_yyyy_to = to_dt_parsed.strftime("%d-%m-%Y")
         except Exception:
             dd_mm_yyyy_from = from_date
             dd_mm_yyyy_to = to_date
 
+        # dd-Mon-YYYY (e.g., 17-sep-2025) lowercased variant observed to work in direct script
+        try:
+            if 'from_dt_parsed' in locals() and 'to_dt_parsed' in locals():
+                dd_mon_yyyy_from = from_dt_parsed.strftime("%d-%b-%Y").lower()
+                dd_mon_yyyy_to = to_dt_parsed.strftime("%d-%b-%Y").lower()
+            else:
+                # Try parsing dd-mm-yyyy if provided
+                _from_tmp = datetime.strptime(from_date, "%d-%m-%Y")
+                _to_tmp = datetime.strptime(to_date, "%d-%m-%Y")
+                dd_mon_yyyy_from = _from_tmp.strftime("%d-%b-%Y").lower()
+                dd_mon_yyyy_to = _to_tmp.strftime("%d-%b-%Y").lower()
+        except Exception:
+            # Fallback to original strings (may already be in desired format)
+            dd_mon_yyyy_from = from_date
+            dd_mon_yyyy_to = to_date
+
         # Interval variants (keep original first)
         interval_variants = [interval]
         if interval.upper() == "1D":
-            interval_variants.extend(["DAY", "1d", "day", "D", "1DAY"])
+            interval_variants.extend(["DAY", "1d", "day", "D", "1DAY", "1 day", "1day"])
 
         # Symbol candidates
         is_numeric_symbol = False
@@ -543,12 +559,27 @@ class IIFLAPIService:
                     "desc": "symbol_fromDate_toDate_ddmmyyyy"
                 })
 
+        # 3c) Alternative date format: dd-Mon-YYYY lower with fromDate/toDate
+        for sym in symbol_variants:
+            for iv in interval_variants:
+                attempts.append({
+                    "payload": {"symbol": sym, "interval": iv, "fromDate": dd_mon_yyyy_from, "toDate": dd_mon_yyyy_to},
+                    "desc": "symbol_fromDate_toDate_ddMonYYYY"
+                })
+
         # 4) Include exchange hints with symbol
         for sym in symbol_variants:
             for iv in interval_variants:
                 attempts.append({
                     "payload": {"symbol": sym, "exchange": "NSEEQ", "interval": iv, "fromDate": yyyy_mm_dd_from, "toDate": yyyy_mm_dd_to},
                     "desc": "symbol_exchange_fromDate_toDate"
+                })
+        # 4a-alt) exchange + dd-Mon-YYYY lower
+        for sym in symbol_variants:
+            for iv in interval_variants:
+                attempts.append({
+                    "payload": {"symbol": sym, "exchange": "NSEEQ", "interval": iv, "fromDate": dd_mon_yyyy_from, "toDate": dd_mon_yyyy_to},
+                    "desc": "symbol_exchange_fromDate_toDate_ddMonYYYY"
                 })
         # 4a) exchange 'NSE' + series 'EQ'
         for sym in symbol_variants:
@@ -600,6 +631,16 @@ class IIFLAPIService:
                 attempts.append({
                     "payload": {"instrument": str(normalized_symbol), "interval": iv, "fromDate": yyyy_mm_dd_from, "toDate": yyyy_mm_dd_to},
                     "desc": "instrument_fromDate_toDate"
+                })
+                # instrumentId with dd-Mon-YYYY lower
+                attempts.append({
+                    "payload": {"instrumentId": str(normalized_symbol), "interval": iv, "fromDate": dd_mon_yyyy_from, "toDate": dd_mon_yyyy_to},
+                    "desc": "instrumentId_fromDate_toDate_ddMonYYYY"
+                })
+                # instrumentId + exchange with dd-Mon-YYYY lower and explicit interval variant
+                attempts.append({
+                    "payload": {"instrumentId": str(normalized_symbol), "exchange": "NSEEQ", "interval": iv, "fromDate": dd_mon_yyyy_from, "toDate": dd_mon_yyyy_to},
+                    "desc": "instrumentId_exchange_fromDate_toDate_ddMonYYYY"
                 })
 
         # Execute attempts sequentially until one yields data
