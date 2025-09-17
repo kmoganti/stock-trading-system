@@ -113,9 +113,12 @@ class DataFetcher:
             # Data may still be present even when status is not Ok
             payload_list = []
             if isinstance(result, dict):
-                payload_list = result.get("result")
-                if not isinstance(payload_list, list):
-                    payload_list = result.get("data", [])
+                # Prefer common containers in order
+                for key in ["result", "data", "resultData", "candles", "history"]:
+                    candidate = result.get(key)
+                    if isinstance(candidate, list):
+                        payload_list = candidate
+                        break
 
             if has_ok_flag or (isinstance(payload_list, list) and len(payload_list) > 0):
                 if payload_list:
