@@ -1,0 +1,4 @@
+Paste your IIFL API Bearer token below or a raw token value.
+If raw token is provided, the script will prefix it with 'Bearer '.
+Example:
+Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...

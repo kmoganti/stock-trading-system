@@ -1,3 +1,8 @@
+files/*.json
+files/auth_token.txt
+logs/
+__pycache__/
+*.pyc
 # Environment variables and sensitive configuration
 .env
 .env.local

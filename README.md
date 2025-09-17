@@ -117,6 +117,21 @@ black .
 flake8 .
 ```
 
+## Historical Candles Fetcher (Holdings)
+
+Use the standalone script to fetch historical OHLC candles for each holding using IIFL's historical data endpoint.
+
+1. Prepare inputs in the `files/` directory:
+   - Copy `files/holding.example.json` to `files/holding.json` and edit with your holdings. Requires `nseInstrumentId` and `nseTradingSymbol`.
+   - Copy `files/auth_token.example.txt` to `files/auth_token.txt` and paste your Bearer token (or raw token; the script prefixes it automatically).
+
+2. Run the fetcher:
+   ```bash
+   python scripts/fetch_holdings_candles.py
+   ```
+
+3. Output JSON candle files are saved under `files/` as `<SYMBOL>_candles.json`.
+
 ## License
 
 Private use only. Not for redistribution.
