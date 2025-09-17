@@ -6,8 +6,23 @@ Test signal generation for today's trading
 import asyncio
 import sys
 import os
+import json
 from datetime import datetime, timedelta
 import argparse
+from typing import Optional, Dict
+import logging
+
+# Optional deps
+try:
+    import pandas as pd  # type: ignore
+    HAS_PANDAS = True
+except Exception:
+    HAS_PANDAS = False
+try:
+    import requests  # type: ignore
+    HAS_REQUESTS = True
+except Exception:
+    HAS_REQUESTS = False
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -17,6 +32,138 @@ from services.data_fetcher import DataFetcher
 from services.strategy import StrategyService
 from models.database import init_db, get_db
 from config import get_settings
+
+logger = logging.getLogger(__name__)
+
+def _read_auth_token(auth_token_path: str) -> Optional[str]:
+    try:
+        with open(auth_token_path, "r", encoding="utf-8") as f:
+            raw = f.read().strip()
+            return raw if raw.lower().startswith("bearer ") else f"Bearer {raw}"
+    except Exception:
+        return None
+
+def _load_holdings_symbol_to_instrument(files_dir: str) -> Dict[str, str]:
+    mapping: Dict[str, str] = {}
+    try:
+        holding_path = os.path.join(files_dir, "holding.json")
+        if not os.path.exists(holding_path):
+            return mapping
+        with open(holding_path, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+        holdings = obj.get("result") if isinstance(obj, dict) else obj
+        if isinstance(holdings, list):
+            for h in holdings:
+                try:
+                    symbol = (h.get("nseTradingSymbol") or "").upper()
+                    instrument_id = h.get("nseInstrumentId")
+                    if symbol and instrument_id:
+                        mapping[symbol] = str(instrument_id)
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return mapping
+
+def _normalize_hist_to_df(hist_list) -> Optional["pd.DataFrame"]:
+    if not HAS_PANDAS:
+        return None
+    try:
+        if not hist_list:
+            return pd.DataFrame()
+        df = pd.DataFrame(hist_list)
+        # Standardize keys
+        df.columns = [str(c).lower() for c in df.columns]
+        if "date" not in df.columns:
+            for c in ["time", "timestamp", "datetime"]:
+                if c in df.columns:
+                    df["date"] = df[c]
+                    break
+        if "date" not in df.columns:
+            return pd.DataFrame()
+        df["date"] = pd.to_datetime(df["date"])  # type: ignore
+        df.set_index("date", inplace=True)
+        for c in ["open", "high", "low", "close", "volume"]:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+        return df.dropna()
+    except Exception:
+        return None
+
+def _direct_fetch_to_df(auth_token: str, instrument_id: str, from_dt: datetime, to_dt: datetime) -> Optional["pd.DataFrame"]:
+    if not (HAS_PANDAS and HAS_REQUESTS):
+        return None
+    try:
+        # Match scripts/fetch_holdings_candles.py direct payload format
+        url = "https://api.iiflcapital.com/v1/marketdata/historicaldata"
+        headers = {"Content-Type": "application/json", "Authorization": auth_token}
+        payload = {
+            "exchange": "NSEEQ",
+            "instrumentId": str(instrument_id),
+            "interval": "1 day",
+            # dd-Mon-YYYY lower per the script
+            "fromDate": from_dt.strftime("%d-%b-%Y").lower(),
+            "toDate": to_dt.strftime("%d-%b-%Y").lower(),
+        }
+        resp = requests.post(url, headers=headers, json=payload, timeout=60)  # type: ignore
+        resp.raise_for_status()
+        data = resp.json()
+        # Accept both {status/result} and raw lists
+        if isinstance(data, dict):
+            hist = data.get("result") or data.get("data") or []
+        else:
+            hist = data
+        # Standardize list of dicts to lower keys
+        normalized = []
+        for item in hist or []:
+            item = item or {}
+            normalized.append({str(k).lower(): v for k, v in item.items()})
+        return _normalize_hist_to_df(normalized)
+    except Exception as e:
+        logger.warning(f"Direct historical fetch failed for instrumentId={instrument_id}: {e}")
+        return None
+
+async def _resilient_fetch_hist_df(data_fetcher: DataFetcher, symbol: str, from_dt: datetime, to_dt: datetime,
+                                   holdings_map: Optional[Dict[str, str]], auth_token: Optional[str]) -> Optional["pd.DataFrame"]:
+    # 1) Primary: DataFetcher by symbol (IIFL service already tries symbol variants and date key variants)
+    df = await data_fetcher.get_historical_data_df(
+        symbol, "1D", from_dt.strftime("%Y-%m-%d"), to_dt.strftime("%Y-%m-%d")
+    )
+    if df is not None and not df.empty:
+        return df
+
+    # 2) If we have instrumentId from holdings, try via DataFetcher using numeric id
+    instrument_id = None
+    if holdings_map:
+        instrument_id = holdings_map.get(symbol.upper())
+        # Also try a suffix-free lookup (e.g., RELIANCE-EQ -> RELIANCE)
+        if not instrument_id and "-" in symbol:
+            base = symbol.split("-", 1)[0]
+            instrument_id = holdings_map.get(base.upper())
+
+    if instrument_id:
+        df_id = await data_fetcher.get_historical_data_df(
+            str(instrument_id), "1D", from_dt.strftime("%Y-%m-%d"), to_dt.strftime("%Y-%m-%d")
+        )
+        if df_id is not None and not df_id.empty:
+            return df_id
+
+        # 3) Fallback to direct REST call if token available
+        if auth_token:
+            direct_df = _direct_fetch_to_df(auth_token, str(instrument_id), from_dt, to_dt)
+            if direct_df is not None and not direct_df.empty:
+                return direct_df
+
+    # 4) As a last fallback, try low-level list and convert if pandas exists
+    try:
+        raw = await data_fetcher.get_historical_data(
+            symbol, "1D", from_date=from_dt.strftime("%Y-%m-%d"), to_date=to_dt.strftime("%Y-%m-%d")
+        )
+        if raw:
+            return _normalize_hist_to_df(raw)
+    except Exception:
+        pass
+    return None
 
 async def test_signal_generation(symbols_to_test: list = None):
     """
@@ -64,6 +211,11 @@ async def test_signal_generation(symbols_to_test: list = None):
             print("=" * 50)
             
             total_signals = 0
+
+            # Prepare optional fallbacks (holdings map and auth token)
+            files_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "files")
+            holdings_map = _load_holdings_symbol_to_instrument(files_dir)
+            auth_token = _read_auth_token(os.path.join(files_dir, "auth_token.txt")) if holdings_map else None
             
             for symbol in watchlist:
                 print(f"\nAnalyzing {symbol}:")
@@ -73,10 +225,14 @@ async def test_signal_generation(symbols_to_test: list = None):
                     to_date = datetime.now()
                     from_date = to_date - timedelta(days=90) # Fetch 90 days for indicator calculation
                     
-                    # Assuming DataFetcher can return a DataFrame, which is a common pattern.
-                    # If this method doesn't exist, it would need to be added to DataFetcher.
-                    hist_data_df = await data_fetcher.get_historical_data_df(
-                        symbol, '1D', from_date.strftime('%Y-%m-%d'), to_date.strftime('%Y-%m-%d')
+                    # Resilient fetch mirroring scripts/fetch_holdings_candles.py fallbacks
+                    hist_data_df = await _resilient_fetch_hist_df(
+                        data_fetcher,
+                        symbol,
+                        from_date,
+                        to_date,
+                        holdings_map,
+                        auth_token,
                     )
 
                     if hist_data_df is None or hist_data_df.empty:
