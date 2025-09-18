@@ -28,8 +28,15 @@ class IIFLAPIService:
             self._load_settings()
             self.session_token: Optional[str] = None
             self.token_expiry: Optional[datetime] = None
+            # Track auth code expiry for UI; IIFL auth codes are day-bound
+            self.auth_code_expiry: Optional[datetime] = None
             self.http_client: Optional[httpx.AsyncClient] = None
             self.get_user_session_endpoint = "/getusersession"
+            # Initialize an auth-code expiry hint
+            try:
+                self._initialize_auth_expiry()
+            except Exception:
+                pass
             IIFLAPIService._initialized = True
 
     def _load_settings(self) -> None:
@@ -40,14 +47,22 @@ class IIFLAPIService:
             self.client_id = settings.iifl_client_id
             self.auth_code = settings.iifl_auth_code
             self.app_secret = settings.iifl_app_secret
+            # Backward compatibility: single base_url
             self.base_url = settings.iifl_base_url
+            # New: separate bases for auth and market
+            self.auth_base_url = os.getenv("IIFL_AUTH_BASE_URL", "https://ttblaze.iifl.com/apimarketdata")
+            self.market_base_url = os.getenv("IIFL_MARKET_BASE_URL", os.getenv("IIFL_BASE_URL", "https://api.iiflcapital.com/v1"))
             self.settings = settings
         except Exception:
             # Minimal fallback using environment variables directly
             self.client_id = os.getenv("IIFL_CLIENT_ID", "")
             self.auth_code = os.getenv("IIFL_AUTH_CODE", "")
             self.app_secret = os.getenv("IIFL_APP_SECRET", "")
-            self.base_url = os.getenv("IIFL_BASE_URL", "https://ttblaze.iifl.com/apimarketdata")
+            # Backward compatibility: single base_url
+            self.base_url = os.getenv("IIFL_BASE_URL", "https://api.iiflcapital.com/v1")
+            # New: split auth and market bases
+            self.auth_base_url = os.getenv("IIFL_AUTH_BASE_URL", "https://ttblaze.iifl.com/apimarketdata")
+            self.market_base_url = os.getenv("IIFL_MARKET_BASE_URL", self.base_url)
             self.settings = type("_FallbackSettings", (), {
                 "iifl_client_id": self.client_id,
                 "iifl_auth_code": self.auth_code,
@@ -70,6 +85,62 @@ class IIFLAPIService:
     def sha256_hash(self, input_string: str) -> str:
         """Returns the SHA-256 hash of the input string."""
         return hashlib.sha256(input_string.encode('utf-8')).hexdigest()
+
+    # --- Auth helpers for UI integration ---
+    def _initialize_auth_expiry(self) -> None:
+        """Initialize or refresh the expected auth-code expiry timestamp.
+
+        IIFL auth codes typically expire daily. As an approximation, set expiry to
+        24 hours from now if not already set, or refresh to the next 24h window
+        after an update. This value is informational for the UI.
+        """
+        now = datetime.now()
+        if self.auth_code:
+            # Set to 24 hours ahead to indicate the next refresh time window
+            self.auth_code_expiry = now + timedelta(hours=24)
+        else:
+            self.auth_code_expiry = None
+
+    def _get_env_file_path(self) -> str:
+        """Resolve the project .env file path (project root)."""
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+        return os.path.join(project_root, ".env")
+
+    def _update_env_auth_code(self, new_auth_code: str) -> None:
+        """Persist the updated auth code to the .env file, preserving other entries."""
+        env_path = self._get_env_file_path()
+        lines: List[str] = []
+        try:
+            if os.path.exists(env_path):
+                with open(env_path, "r", encoding="utf-8") as f:
+                    lines = f.read().splitlines()
+        except Exception:
+            lines = []
+
+        key = "IIFL_AUTH_CODE"
+        replaced = False
+        updated_lines: List[str] = []
+        for line in lines:
+            if line.strip().startswith(f"{key}="):
+                updated_lines.append(f"{key}={new_auth_code}")
+                replaced = True
+            else:
+                updated_lines.append(line)
+        if not replaced:
+            updated_lines.append(f"{key}={new_auth_code}")
+
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(env_path), exist_ok=True)
+        tmp_path = env_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(updated_lines) + "\n")
+        os.replace(tmp_path, env_path)
+        # Also update in-memory settings so subsequent loads see the change
+        try:
+            import config.settings as cfg
+            cfg._settings = None  # type: ignore
+        except Exception:
+            pass
     
     async def get_user_session(self, auth_code: str) -> Dict:
         """Request a new user session from the IIFL API using checksum authentication."""
@@ -79,7 +150,7 @@ class IIFLAPIService:
         checksum_str = self.client_id + auth_code + self.app_secret
         checksum = self.sha256_hash(checksum_str)
 
-        url = f"{self.base_url}{self.get_user_session_endpoint}"
+        url = f"{(self.auth_base_url or self.base_url).rstrip('/')}{self.get_user_session_endpoint}"
         headers = {"Content-Type": "application/json"}
         
         # The payload for the session request includes the checksum
@@ -245,13 +316,19 @@ class IIFLAPIService:
         
         start_time = time.perf_counter()
         client = await self.get_http_client()
-        url = f"{self.base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+        # Use market base URL if available
+        base = getattr(self, 'market_base_url', None) or self.base_url
+        url = f"{base.rstrip('/')}/{endpoint.lstrip('/')}"
         
         try:
+            # Build Authorization header without double-prefixing
+            token_value = self.session_token or ""
+            auth_header = token_value if str(token_value).lower().startswith("bearer ") else (f"Bearer {token_value}" if token_value else "")
+
             headers = {
                 "Content-Type": "application/json",
                 "User-Agent": "IIFL-Trading-System/1.0",
-                "Authorization": f"Bearer {self.session_token}"
+                **({"Authorization": auth_header} if auth_header else {})
             }
             
             # The request body should only contain the data specific to the endpoint.
