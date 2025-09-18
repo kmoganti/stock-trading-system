@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     iifl_client_id: str = Field(..., env="IIFL_CLIENT_ID")
     iifl_auth_code: str = Field(..., env="IIFL_AUTH_CODE")
     iifl_app_secret: str = Field(..., env="IIFL_APP_SECRET")
-    iifl_base_url: str = Field("https://ttblaze.iifl.com/apimarketdata", env="IIFL_BASE_URL")
+    iifl_base_url: str = Field("https://api.iiflcapital.com/v1", env="IIFL_BASE_URL")
     
     # Trading Configuration
     auto_trade: bool = Field(False, env="AUTO_TRADE")
