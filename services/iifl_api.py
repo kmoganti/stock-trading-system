@@ -49,9 +49,6 @@ class IIFLAPIService:
             self.app_secret = settings.iifl_app_secret
             # Backward compatibility: single base_url
             self.base_url = settings.iifl_base_url
-            # New: separate bases for auth and market
-            self.auth_base_url = os.getenv("IIFL_AUTH_BASE_URL", "https://ttblaze.iifl.com/apimarketdata")
-            self.market_base_url = os.getenv("IIFL_MARKET_BASE_URL", os.getenv("IIFL_BASE_URL", "https://api.iiflcapital.com/v1"))
             self.settings = settings
         except Exception:
             # Minimal fallback using environment variables directly
@@ -60,9 +57,6 @@ class IIFLAPIService:
             self.app_secret = os.getenv("IIFL_APP_SECRET", "")
             # Backward compatibility: single base_url
             self.base_url = os.getenv("IIFL_BASE_URL", "https://api.iiflcapital.com/v1")
-            # New: split auth and market bases
-            self.auth_base_url = os.getenv("IIFL_AUTH_BASE_URL", "https://ttblaze.iifl.com/apimarketdata")
-            self.market_base_url = os.getenv("IIFL_MARKET_BASE_URL", self.base_url)
             self.settings = type("_FallbackSettings", (), {
                 "iifl_client_id": self.client_id,
                 "iifl_auth_code": self.auth_code,
@@ -150,7 +144,7 @@ class IIFLAPIService:
         checksum_str = self.client_id + auth_code + self.app_secret
         checksum = self.sha256_hash(checksum_str)
 
-        url = f"{(self.auth_base_url or self.base_url).rstrip('/')}{self.get_user_session_endpoint}"
+        url = f"{self.base_url.rstrip('/')}{self.get_user_session_endpoint}"
         headers = {"Content-Type": "application/json"}
         
         # The payload for the session request includes the checksum
@@ -316,8 +310,8 @@ class IIFLAPIService:
         
         start_time = time.perf_counter()
         client = await self.get_http_client()
-        # Use market base URL if available
-        base = getattr(self, 'market_base_url', None) or self.base_url
+        # Use single consolidated base URL
+        base = self.base_url
         url = f"{base.rstrip('/')}/{endpoint.lstrip('/')}"
         
         try:

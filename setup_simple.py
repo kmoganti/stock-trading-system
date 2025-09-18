@@ -52,7 +52,7 @@ def main():
 CLIENT_ID=your_client_id
 AUTH_CODE=your_auth_code
 APP_SECRET=your_app_secret
-BASE_URL=https://ttblaze.iifl.com
+BASE_URL=https://api.iiflcapital.com/v1
 
 # Telegram Bot Configuration
 TELEGRAM_BOT_TOKEN=your_bot_token
