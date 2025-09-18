@@ -84,8 +84,8 @@ def main() -> int:
     # Date range: ~1 year for a quick check
     to_dt = datetime.now()
     from_dt = to_dt - timedelta(days=365)
-    to_date_str = to_dt.strftime("%d-%b-%Y").lower()
-    from_date_str = from_dt.strftime("%d-%b-%Y").lower()
+    to_date_str = to_dt.strftime("%d-%b-%Y")
+    from_date_str = from_dt.strftime("%d-%b-%Y")
 
     if not os.path.exists(AUTH_TOKEN_PATH):
         example = os.path.join(FILES_DIR, "auth_token.example.txt")
