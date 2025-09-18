@@ -24,14 +24,17 @@ async def get_auth_status():
     logger.info("Request for authentication status.")
     try:
         service = IIFLAPIService()
-        status = AuthStatus(
-            is_authenticated=service.session_token is not None and service.token_expiry is not None,
-            token_expiry=service.token_expiry,
+        # Consider authenticated if there is a non-mock session token
+        token = getattr(service, 'session_token', None)
+        is_real_token = bool(token) and not str(token).startswith("mock_")
+        auth_status = AuthStatus(
+            is_authenticated=is_real_token,
+            token_expiry=getattr(service, 'token_expiry', None),
             auth_code_expiry=getattr(service, 'auth_code_expiry', None),
             last_error=None
         )
-        logger.info(f"Auth status: authenticated={status.is_authenticated}")
-        return status
+        logger.info(f"Auth status: authenticated={auth_status.is_authenticated}")
+        return auth_status
     except Exception as e:
         logger.error(f"Error getting auth status: {str(e)}")
         return AuthStatus(

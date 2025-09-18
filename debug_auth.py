@@ -27,7 +27,7 @@ async def debug_authentication():
     print()
     
     print("Testing direct session request...")
-    response_data = service.get_user_session(service.auth_code)
+    response_data = await service.get_user_session(service.auth_code)
     
     print("Raw IIFL Response:")
     print(json.dumps(response_data, indent=2))
