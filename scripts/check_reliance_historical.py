@@ -6,17 +6,15 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 
-import requests
 import asyncio
 from services.iifl_api import IIFLAPIService
-
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FILES_DIR = os.path.join(BASE_DIR, "files")
-AUTH_TOKEN_PATH = os.path.join(FILES_DIR, "auth_token.txt")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
+# Ensure env is loaded for the service to find credentials
+from dotenv import load_dotenv
+load_dotenv()
 
 def read_auth_token(path: str) -> Optional[str]:
     try:
@@ -32,6 +30,7 @@ def read_auth_token(path: str) -> Optional[str]:
 
 def load_contracts() -> List[Dict[str, Any]]:
     url = "https://api.iiflcapital.com/v1/contractfiles/NSEEQ.json"
+    import requests
     logger.info("Downloading NSEEQ contracts JSON...")
     resp = requests.get(url, timeout=60)
     resp.raise_for_status()
@@ -65,98 +64,41 @@ def find_reliance_instrument_id(id_map: Dict[str, Any]) -> Optional[str]:
             return str(v)
     return None
 
-
-def fetch_historical_direct(token: str, instrument_id: str, from_date: str, to_date: str) -> Dict[str, Any]:
-    url = "https://api.iiflcapital.com/v1/marketdata/historicaldata"
-    headers = {"Authorization": token, "Content-Type": "application/json"}
-    payload = {
-        "exchange": "NSEEQ",
-        "instrumentId": str(instrument_id),
-        "interval": "1 day",
-        "fromDate": from_date,
-        "toDate": to_date,
-    }
-    logger.info(f"POST {url} for instrumentId={instrument_id}")
-    resp = requests.post(url, headers=headers, json=payload, timeout=60)
-    resp.raise_for_status()
-    return resp.json()
-
-
-async def fetch_historical_via_service(instrument_id: str, from_date: str, to_date: str) -> Dict[str, Any]:
-    service = IIFLAPIService()
-    # Ensure authentication to populate Authorization header automatically
-    ok = await service._ensure_authenticated()
-    if not ok or not service.session_token or str(service.session_token).startswith("mock_"):
-        raise RuntimeError("IIFL authentication failed or mock token in use. Update IIFL credentials in environment.")
-
-    # The service's get_historical_data accepts symbol or instrumentId and interval tokens like "1D"
-    # Convert dd-Mon-YYYY (script default) to yyyy-mm-dd for the first attempt
+async def main() -> int:
     try:
-        from_dt_parsed = datetime.strptime(from_date, "%d-%b-%Y")
-        to_dt_parsed = datetime.strptime(to_date, "%d-%b-%Y")
-        yyyy_mm_dd_from = from_dt_parsed.strftime("%Y-%m-%d")
-        yyyy_mm_dd_to = to_dt_parsed.strftime("%Y-%m-%d")
-    except Exception:
-        yyyy_mm_dd_from = from_date
-        yyyy_mm_dd_to = to_date
-
-    # Prefer numeric instrument id directly
-    data = await service.get_historical_data(str(instrument_id), "1D", yyyy_mm_dd_from, yyyy_mm_dd_to)
-    if not isinstance(data, dict):
-        return {}
-    return data
-
-
-def main() -> int:
-    # Date range: ~1 year for a quick check
-    to_dt = datetime.now()
-    from_dt = to_dt - timedelta(days=365)
-    to_date_str = to_dt.strftime("%d-%b-%Y")
-    from_date_str = from_dt.strftime("%d-%b-%Y")
-
-    # Use system authentication via IIFLAPIService instead of token file
-
-    try:
+        # 1. Get instrument ID for Reliance
         contracts = load_contracts()
         id_map = get_instrument_id_map(contracts)
         reliance_id = find_reliance_instrument_id(id_map)
         if not reliance_id:
             logger.error("Could not resolve RELIANCE instrumentId from contracts map.")
             return 1
-
         logger.info(f"Using RELIANCE instrumentId={reliance_id}")
-        # Prefer system auth path; if it fails, fallback to token file if present
-        try:
-            data = asyncio.run(fetch_historical_via_service(reliance_id, from_date_str, to_date_str))
-        except Exception as auth_err:
-            logger.warning(f"System auth path failed: {auth_err}")
-            if os.path.exists(AUTH_TOKEN_PATH):
-                logger.info("Falling back to auth_token.txt as a temporary measure")
-                token = read_auth_token(AUTH_TOKEN_PATH)
-                if not token:
-                    raise
-                data = fetch_historical_direct(token, reliance_id, from_date_str, to_date_str)
-            else:
-                raise
-        # Summarize
-        result_list = (
-            data.get("result")
-            or data.get("data")
-            or data.get("resultData")
-            or data.get("candles")
-            or data.get("history")
-            or []
-        )
-        count = len(result_list) if isinstance(result_list, list) else 0
-        status = data.get("status") or data.get("stat")
-        logger.info(f"Historical fetch status={status}, records={count}")
 
-        # Save minimal output for inspection
-        out_path = os.path.join(FILES_DIR, "RELIANCE_candles_check.json")
-        with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        logger.info(f"Saved response to {out_path}")
-        print(json.dumps({"ok": True, "status": status, "records": count, "out": out_path}, indent=2))
+        # 2. Instantiate service and authenticate
+        service = IIFLAPIService()
+        auth_ok = await service.authenticate()
+        if not auth_ok or (service.session_token or "").startswith("mock_"):
+            logger.error("Authentication failed or using mock token. Cannot proceed.")
+            return 1
+
+        # 3. Fetch historical data using the service
+        to_date = datetime.now()
+        from_date = to_date - timedelta(days=5)
+        from_date_str = from_date.strftime("%Y-%m-%d")
+        to_date_str = to_date.strftime("%Y-%m-%d")
+
+        logger.info(f"Fetching historical data for ID {reliance_id} from {from_date_str} to {to_date_str}")
+        data = await service.get_historical_data(reliance_id, "1D", from_date_str, to_date_str)
+
+        if data and (data.get("result") or data.get("data")):
+            logger.info("Successfully fetched historical data.")
+            logger.info(f"Response sample: {json.dumps(data, indent=2)}")
+        else:
+            logger.error("Failed to fetch historical data via service.")
+            logger.error(f"Final API response: {json.dumps(data, indent=2)}")
+            return 1
+
         return 0
     except Exception as e:
         logger.exception(f"Failed to fetch RELIANCE historical data: {e}")
@@ -164,5 +106,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
-
+    sys.exit(asyncio.run(main()))
