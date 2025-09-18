@@ -3,6 +3,7 @@ import asyncio
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 import logging
+import httpx
 from .iifl_api import IIFLAPIService
 try:
     from .watchlist import WatchlistService  # type: ignore
@@ -43,6 +44,85 @@ class DataFetcher:
         """Set cache with expiry"""
         self.cache[key] = data
         self.cache_expiry[key] = datetime.now() + timedelta(seconds=ttl_seconds)
+
+    async def _get_contract_id_map(self) -> Dict[str, Any]:
+        """Download and cache NSEEQ contract map tradingSymbol -> instrumentId.
+
+        Cached for 12 hours to minimize network calls. Returns empty dict on failure.
+        """
+        cache_key = "contracts_map_nseeq"
+        if self._is_cache_valid(cache_key, ttl_seconds=12 * 60 * 60):
+            cached = self._get_cache(cache_key)
+            if isinstance(cached, dict):
+                return cached
+
+        url = "https://api.iiflcapital.com/v1/contractfiles/NSEEQ.json"
+        id_map: Dict[str, Any] = {}
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                data = resp.json()
+                contracts: List[Dict[str, Any]]
+                if isinstance(data, dict) and isinstance(data.get("result"), list):
+                    contracts = data.get("result", [])  # type: ignore
+                elif isinstance(data, list):
+                    contracts = data
+                else:
+                    contracts = []
+
+                for c in contracts:
+                    try:
+                        tsym = c.get("tradingSymbol")
+                        exch = c.get("exchange")
+                        inst = c.get("instrumentId")
+                        if tsym and inst and (exch == "NSEEQ" or exch == "NSE"):
+                            id_map[str(tsym).upper()] = str(inst)
+                    except Exception:
+                        continue
+
+                if id_map:
+                    self._set_cache(cache_key, id_map, ttl_seconds=12 * 60 * 60)
+                return id_map
+        except Exception as e:
+            logger.warning(f"Failed to download NSEEQ contracts: {str(e)}")
+            return {}
+
+    async def _resolve_instrument_id(self, symbol: str) -> Optional[str]:
+        """Resolve a trading symbol to an instrumentId using the contracts map.
+
+        Returns the numeric instrumentId as a string, or None if not found.
+        """
+        if not symbol:
+            return None
+        # If already numeric, return as-is
+        try:
+            int(str(symbol).strip())
+            return str(symbol)
+        except ValueError:
+            pass
+
+        base_symbol = str(symbol).upper().strip()
+        # Remove common suffixes for base lookup
+        base_part = base_symbol.split("-", 1)[0] if "-" in base_symbol else base_symbol
+
+        id_map = await self._get_contract_id_map()
+        if not id_map:
+            return None
+
+        # Priority: exact base, explicit -EQ, then contains match
+        for key in [base_part, f"{base_part}-EQ", base_symbol]:
+            if key in id_map and id_map[key]:
+                return str(id_map[key])
+
+        # Last resort: any key containing base_part
+        for k, v in id_map.items():
+            try:
+                if base_part in str(k).upper() and v:
+                    return str(v)
+            except Exception:
+                continue
+        return None
 
     async def get_historical_data_df(self, symbol: str, interval: str, from_date: str, to_date: str) -> Optional[pd.DataFrame]:
         """
@@ -103,7 +183,7 @@ class DataFetcher:
             if cached_data is not None:
                 return cached_data
             
-            # Fetch from IIFL API
+            # First attempt: use symbol as provided (fast path, no extra network for contracts)
             result = await self.iifl.get_historical_data(symbol, interval, from_date, to_date)
             
             # Accept both 'status' and legacy 'stat' fields, but also tolerate
@@ -140,7 +220,45 @@ class DataFetcher:
                     return standardized_data
             elif result:
                 error_message = result.get('message') or result.get('emsg', 'Unknown API error') if isinstance(result, dict) else 'Unknown API error'
-                logger.warning(f"Failed to fetch historical data for {symbol}: {error_message}")
+                logger.info(f"Primary fetch for {symbol} returned no data: {error_message}")
+
+            # Fallback: resolve instrumentId via contracts and retry once
+            try:
+                resolved_id = await self._resolve_instrument_id(symbol)
+            except Exception as e:
+                resolved_id = None
+                logger.debug(f"InstrumentId resolution skipped/failed for {symbol}: {str(e)}")
+
+            if resolved_id and str(resolved_id) != str(symbol):
+                result2 = await self.iifl.get_historical_data(str(resolved_id), interval, from_date, to_date)
+                has_ok_flag2 = bool(result2) and isinstance(result2, dict) and (
+                    result2.get("status") == "Ok" or result2.get("stat") == "Ok"
+                )
+                payload_list2 = []
+                if isinstance(result2, dict):
+                    for key in ["result", "data", "resultData", "candles", "history"]:
+                        candidate = result2.get(key)
+                        if isinstance(candidate, list):
+                            payload_list2 = candidate
+                            break
+                if has_ok_flag2 or (isinstance(payload_list2, list) and len(payload_list2) > 0):
+                    if payload_list2:
+                        standardized_data: List[Dict] = []
+                        for item in payload_list2:
+                            item = item or {}
+                            standardized_item = {k.lower(): v for k, v in item.items()}
+                            if 'date' not in standardized_item:
+                                for candidate in ['time', 'timestamp', 'datetime']:
+                                    if candidate in standardized_item:
+                                        standardized_item['date'] = standardized_item[candidate]
+                                        break
+                            standardized_data.append(standardized_item)
+                        # Slightly longer cache on successful fallback
+                        self._set_cache(cache_key, standardized_data, 600)
+                        return standardized_data
+                elif result2:
+                    error_message2 = result2.get('message') or result2.get('emsg', 'Unknown API error') if isinstance(result2, dict) else 'Unknown API error'
+                    logger.warning(f"Fallback instrumentId fetch failed for {symbol} (id={resolved_id}): {error_message2}")
             
             return []
             
