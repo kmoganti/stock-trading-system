@@ -16,18 +16,6 @@ logger = logging.getLogger(__name__)
 from dotenv import load_dotenv
 load_dotenv()
 
-def read_auth_token(path: str) -> Optional[str]:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            raw = f.read().strip()
-            if not raw:
-                return None
-            return raw if raw.lower().startswith("bearer ") else f"Bearer {raw}"
-    except Exception as e:
-        logger.error(f"Failed to read auth token: {e}")
-        return None
-
-
 def load_contracts() -> List[Dict[str, Any]]:
     url = "https://api.iiflcapital.com/v1/contractfiles/NSEEQ.json"
     import requests
