@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 import os
 
+
 # Add the project root to Python path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
@@ -89,14 +90,24 @@ def main():
     print("=" * 50)
     
     # Start the FastAPI server
-    is_debug = settings.environment == "development"
-    uvicorn.run(
-        "main:app",
-        host=settings.host,
-        port=settings.port,
-        reload=is_debug,
-        log_level="info" if not is_debug else "debug"
-    )
+    # Use subprocess to run uvicorn. This is the recommended way to handle
+    # programmatic startup with reloading, as it avoids issues where the
+    # reloader process and the worker process both try to bind to the same port.
+    import subprocess
+    
+    is_debug = settings.environment.lower() == "development"
+    log_level = "debug" if is_debug else "info"
+    
+    command = [
+        sys.executable, "-m", "uvicorn", "main:app",
+        "--host", str(settings.host),
+        "--port", str(settings.port),
+        "--log-level", log_level,
+    ]
+    if is_debug:
+        command.append("--reload")
+    
+    subprocess.run(command)
 
 if __name__ == "__main__":
     main()
