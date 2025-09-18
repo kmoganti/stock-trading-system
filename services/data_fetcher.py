@@ -216,7 +216,8 @@ class DataFetcher:
                                     break
                         standardized_data.append(standardized_item)
 
-                    self._set_cache(cache_key, standardized_data, 300)
+                    # Cache for 30 minutes to limit repeated IIFL calls
+                    self._set_cache(cache_key, standardized_data, 1800)
                     return standardized_data
             elif result:
                 error_message = result.get('message') or result.get('emsg', 'Unknown API error') if isinstance(result, dict) else 'Unknown API error'
@@ -253,8 +254,8 @@ class DataFetcher:
                                         standardized_item['date'] = standardized_item[candidate]
                                         break
                             standardized_data.append(standardized_item)
-                        # Slightly longer cache on successful fallback
-                        self._set_cache(cache_key, standardized_data, 600)
+                        # Cache for 30 minutes to limit repeated IIFL calls
+                        self._set_cache(cache_key, standardized_data, 1800)
                         return standardized_data
                 elif result2:
                     error_message2 = result2.get('message') or result2.get('emsg', 'Unknown API error') if isinstance(result2, dict) else 'Unknown API error'

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import logging
 import os
 import time
+from collections import deque
 from services.logging_service import trading_logger
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,17 @@ class IIFLAPIService:
             self.auth_code_expiry: Optional[datetime] = None
             self.http_client: Optional[httpx.AsyncClient] = None
             self.get_user_session_endpoint = "/getusersession"
+            # Simple global rate limiter (per-process) to limit IIFL calls
+            self._req_timestamps_second = deque()
+            self._req_timestamps_minute = deque()
+            try:
+                self.max_requests_per_second = int(os.getenv("IIFL_MAX_RPS", "3") or "3")
+            except Exception:
+                self.max_requests_per_second = 3
+            try:
+                self.max_requests_per_minute = int(os.getenv("IIFL_MAX_RPM", "60") or "60")
+            except Exception:
+                self.max_requests_per_minute = 60
             # Initialize an auth-code expiry hint
             try:
                 self._initialize_auth_expiry()
@@ -371,6 +383,8 @@ class IIFLAPIService:
                 attempted_reauth = False
                 while True:
                     attempt_start = time.perf_counter()
+                    # Throttle globally to avoid exceeding provider rate limits
+                    await self._throttle_before_request()
                     # Recompute headers in case token changed after re-auth
                     token_value = self.session_token or ""
                     auth_header = token_value if str(token_value).lower().startswith("bearer ") else (f"Bearer {token_value}" if token_value else "")
@@ -512,6 +526,46 @@ class IIFLAPIService:
             })
             
             return None
+
+    async def _throttle_before_request(self) -> None:
+        """Naive async rate limiter: caps requests per second and per minute.
+
+        Uses in-memory deques; safe within a single process. Sleeps just enough
+        to honor both limits. Limits are configurable via env IIFL_MAX_RPS and IIFL_MAX_RPM.
+        """
+        try:
+            now = time.monotonic()
+            # Prune old timestamps
+            one_sec_ago = now - 1.0
+            one_min_ago = now - 60.0
+            while self._req_timestamps_second and self._req_timestamps_second[0] < one_sec_ago:
+                self._req_timestamps_second.popleft()
+            while self._req_timestamps_minute and self._req_timestamps_minute[0] < one_min_ago:
+                self._req_timestamps_minute.popleft()
+
+            # If under limits, record and return fast
+            if (len(self._req_timestamps_second) < self.max_requests_per_second and
+                len(self._req_timestamps_minute) < self.max_requests_per_minute):
+                self._req_timestamps_second.append(now)
+                self._req_timestamps_minute.append(now)
+                return
+
+            # Compute minimal sleep needed to drop under both limits
+            sleep_until = 0.0
+            if len(self._req_timestamps_second) >= self.max_requests_per_second:
+                sleep_until = max(sleep_until, self._req_timestamps_second[0] + 1.0)
+            if len(self._req_timestamps_minute) >= self.max_requests_per_minute:
+                sleep_until = max(sleep_until, self._req_timestamps_minute[0] + 60.0)
+            delay = max(0.0, sleep_until - now)
+            if delay > 0:
+                await asyncio.sleep(min(delay, 1.0))  # cap individual sleeps to keep responsive
+            # After sleeping, record this request time
+            now2 = time.monotonic()
+            self._req_timestamps_second.append(now2)
+            self._req_timestamps_minute.append(now2)
+        except Exception:
+            # Best-effort limiter; never block requests on limiter errors
+            return
     
     # User Profile & Limits
     async def get_profile(self) -> Optional[Dict]:
@@ -795,9 +849,30 @@ class IIFLAPIService:
                     "desc": "instrumentId_exchange_fromDate_toDate_ddMonYYYY"
                 })
 
+        # Dedupe attempts to minimize redundant calls
+        unique_attempts: list[dict] = []
+        seen_keys: set[str] = set()
+        for a in attempts:
+            try:
+                k = json.dumps(a.get("payload", {}), sort_keys=True)
+            except Exception:
+                k = str(a.get("payload", {}))
+            if k not in seen_keys:
+                seen_keys.add(k)
+                unique_attempts.append(a)
+
+        # Cap total attempts to avoid excessive API usage
+        try:
+            max_attempts = int(os.getenv("IIFL_HIST_MAX_ATTEMPTS", "10") or "10")
+        except Exception:
+            max_attempts = 10
+        if len(unique_attempts) > max_attempts:
+            logger.info(f"Truncating historical attempts from {len(unique_attempts)} to {max_attempts}")
+            unique_attempts = unique_attempts[:max_attempts]
+
         # Execute attempts sequentially until one yields data
         last_response: Optional[Dict] = None
-        for idx, attempt in enumerate(attempts, start=1):
+        for idx, attempt in enumerate(unique_attempts, start=1):
             payload = attempt["payload"]
             desc = attempt["desc"]
             trading_logger.log_system_event("iifl_hist_attempt", {

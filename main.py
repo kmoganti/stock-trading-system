@@ -25,6 +25,7 @@ from telegram_bot.bot import TelegramBot
 from telegram_bot.handlers import setup_handlers
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 # Ensure logs directory exists
 os.makedirs('logs', exist_ok=True)
@@ -94,6 +95,19 @@ async def lifespan(app: FastAPI):
             CronTrigger(hour=0, minute=30),
             name="daily_housekeeping"
         )
+        # Prefetch watchlist historical data every 30 minutes
+        try:
+            from services.scheduler_tasks import prefetch_watchlist_historical_data
+            scheduler.add_job(
+                lambda: asyncio.create_task(prefetch_watchlist_historical_data()),
+                IntervalTrigger(minutes=30),
+                name="prefetch_watchlist_historical_30m",
+                coalesce=True,
+                max_instances=1
+            )
+            logger.info("Scheduled 30-minute watchlist historical prefetch")
+        except Exception as e:
+            logger.warning(f"Failed to schedule 30-minute historical prefetch: {str(e)}")
         scheduler.start()
         app.state.scheduler = scheduler
         logger.info("Scheduler started for daily housekeeping")
