@@ -275,19 +275,29 @@ class IIFLAPIService:
                         "response_sample": str(response_data)[:200]
                     })
             
-            # If authentication fails, create mock session for development
+            # If authentication fails, allow mock token only in non-production
             logger.error("IIFL authentication failed")
-            logger.info("Creating mock session for development")
-            self.session_token = f"mock_token_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            self.token_expiry = None
-            return True
+            env_name = str(getattr(self.settings, "environment", "development")).lower()
+            if env_name in ["development", "dev", "test", "testing"]:
+                logger.info("Creating mock session for development/testing")
+                self.session_token = f"mock_token_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                self.token_expiry = None
+                return True
+            else:
+                logger.error("Authentication failed and mock tokens are disabled in this environment")
+                return False
                 
         except Exception as e:
             logger.error(f"IIFL API authentication exception: {str(e)}")
-            logger.info("Creating mock session for development")
-            self.session_token = f"mock_token_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            self.token_expiry = None
-            return True
+            env_name = str(getattr(self.settings, "environment", "development")).lower()
+            if env_name in ["development", "dev", "test", "testing"]:
+                logger.info("Creating mock session for development/testing")
+                self.session_token = f"mock_token_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                self.token_expiry = None
+                return True
+            else:
+                logger.error("Authentication exception and mock tokens are disabled in this environment")
+                return False
     
     async def _ensure_authenticated(self) -> bool:
         """Ensure we have a valid authentication"""
@@ -329,9 +339,23 @@ class IIFLAPIService:
             # The session token is sent in the header.
             request_body = data if data is not None else {}
             
+            # Mask Authorization header for logs
+            masked_headers = dict(headers)
+            if "Authorization" in masked_headers:
+                try:
+                    token_str = str(masked_headers["Authorization"]) or ""
+                    if token_str.lower().startswith("bearer "):
+                        token_core = token_str.split(" ", 1)[1]
+                    else:
+                        token_core = token_str
+                    preview = (token_core[:4] + "***") if token_core else "***"
+                    masked_headers["Authorization"] = f"Bearer {preview}"
+                except Exception:
+                    masked_headers["Authorization"] = "Bearer ***"
+
             # Enhanced request logging
             logger.info(f"IIFL API Request: {method.upper()} {url}")
-            logger.info(f"Request Headers: {json.dumps(headers)}")
+            logger.info(f"Request Headers: {json.dumps(masked_headers)}")
             logger.info(f"Request Body: {json.dumps(request_body)}")
             
             # Log to specialized API logger
@@ -344,72 +368,108 @@ class IIFLAPIService:
             })
 
             try:
-                if method.upper() == "GET":
-                    response = await client.get(url, headers=headers, params=request_body)
-                elif method.upper() == "POST":
-                    response = await client.post(url, headers=headers, data=json.dumps(request_body))
-                elif method.upper() == "PUT":
-                    response = await client.put(url, headers=headers, data=json.dumps(request_body))
-                elif method.upper() == "DELETE":
-                    response = await client.delete(url, headers=headers)
-                else:
-                    raise ValueError(f"Unsupported HTTP method: {method}")
-                
-                response_time = time.perf_counter() - start_time
-                
-                # Enhanced response logging
-                logger.info(f"IIFL API Response: {response.status_code} in {response_time:.3f}s")
-                logger.info(f"Response Headers: {json.dumps(dict(response.headers))}")
-                
-                try:
-                    response_data = response.json()
-                    logger.info(f"Response Body: {json.dumps(response_data)}")
-                    
-                    # Log successful API call
-                    trading_logger.log_api_call(
-                        endpoint=url,
-                        method=method.upper(),
-                        status_code=response.status_code,
-                        response_time=response_time,
-                        error=None if response.status_code == 200 else f"HTTP {response.status_code}"
-                    )
-                    
-                    # Log response details
-                    status_field = None
-                    message_field = None
-                    result_count = None
-                    if isinstance(response_data, dict):
-                        status_field = response_data.get("status") or response_data.get("stat")
-                        message_field = response_data.get("message") or response_data.get("emsg")
-                        # Try common list containers
-                        for key in ["result", "data", "resultData"]:
-                            value = response_data.get(key)
-                            if isinstance(value, list):
-                                result_count = len(value)
-                                break
-                    trading_logger.log_system_event("iifl_api_response", {
-                        "url": url,
-                        "method": method.upper(),
-                        "status_code": response.status_code,
-                        "response_time_ms": response_time * 1000,
-                        "response_keys": list(response_data.keys()) if isinstance(response_data, dict) else "non_dict",
-                        "success": response.status_code == 200,
-                        "status": status_field,
-                        "message_preview": (str(message_field)[:120] + ("..." if message_field and len(str(message_field)) > 120 else "")) if message_field else None,
-                        "result_count": result_count
-                    })
-                    
-                except json.JSONDecodeError:
-                    logger.info(f"Response Body (non-JSON): {response.text}")
-                    response_data = None
+                attempted_reauth = False
+                while True:
+                    attempt_start = time.perf_counter()
+                    # Recompute headers in case token changed after re-auth
+                    token_value = self.session_token or ""
+                    auth_header = token_value if str(token_value).lower().startswith("bearer ") else (f"Bearer {token_value}" if token_value else "")
+                    headers = {
+                        "Content-Type": "application/json",
+                        "User-Agent": "IIFL-Trading-System/1.0",
+                        **({"Authorization": auth_header} if auth_header else {})
+                    }
+                    masked_headers_loop = dict(headers)
+                    if "Authorization" in masked_headers_loop:
+                        try:
+                            token_str = str(masked_headers_loop["Authorization"]) or ""
+                            if token_str.lower().startswith("bearer "):
+                                token_core = token_str.split(" ", 1)[1]
+                            else:
+                                token_core = token_str
+                            preview = (token_core[:4] + "***") if token_core else "***"
+                            masked_headers_loop["Authorization"] = f"Bearer {preview}"
+                        except Exception:
+                            masked_headers_loop["Authorization"] = "Bearer ***"
+                    logger.info(f"IIFL API Attempt Headers: {json.dumps(masked_headers_loop)}")
 
-                if response.status_code == 200:
-                    return response_data
-                else:
+                    if method.upper() == "GET":
+                        response = await client.get(url, headers=headers, params=request_body)
+                    elif method.upper() == "POST":
+                        response = await client.post(url, headers=headers, data=json.dumps(request_body))
+                    elif method.upper() == "PUT":
+                        response = await client.put(url, headers=headers, data=json.dumps(request_body))
+                    elif method.upper() == "DELETE":
+                        response = await client.delete(url, headers=headers)
+                    else:
+                        raise ValueError(f"Unsupported HTTP method: {method}")
+
+                    response_time = time.perf_counter() - attempt_start
+
+                    # Enhanced response logging
+                    logger.info(f"IIFL API Response: {response.status_code} in {response_time:.3f}s")
+                    logger.info(f"Response Headers: {json.dumps(dict(response.headers))}")
+
+                    try:
+                        response_data = response.json()
+                        logger.info(f"Response Body: {json.dumps(response_data)}")
+
+                        # Log API call
+                        trading_logger.log_api_call(
+                            endpoint=url,
+                            method=method.upper(),
+                            status_code=response.status_code,
+                            response_time=response_time,
+                            error=None if response.status_code == 200 else f"HTTP {response.status_code}"
+                        )
+
+                        # Log response details
+                        status_field = None
+                        message_field = None
+                        result_count = None
+                        if isinstance(response_data, dict):
+                            status_field = response_data.get("status") or response_data.get("stat")
+                            message_field = response_data.get("message") or response_data.get("emsg")
+                            for key in ["result", "data", "resultData"]:
+                                value = response_data.get(key)
+                                if isinstance(value, list):
+                                    result_count = len(value)
+                                    break
+                        trading_logger.log_system_event("iifl_api_response", {
+                            "url": url,
+                            "method": method.upper(),
+                            "status_code": response.status_code,
+                            "response_time_ms": response_time * 1000,
+                            "response_keys": list(response_data.keys()) if isinstance(response_data, dict) else "non_dict",
+                            "success": response.status_code == 200,
+                            "status": status_field,
+                            "message_preview": (str(message_field)[:120] + ("..." if message_field and len(str(message_field)) > 120 else "")) if message_field else None,
+                            "result_count": result_count
+                        })
+
+                    except json.JSONDecodeError:
+                        logger.info(f"Response Body (non-JSON): {response.text}")
+                        response_data = None
+
+                    if response.status_code == 200:
+                        return response_data
+
+                    if response.status_code == 401 and not attempted_reauth:
+                        logger.warning("Received 401 Unauthorized from IIFL API. Re-authenticating and retrying once.")
+                        trading_logger.log_system_event("iifl_api_unauthorized", {"url": url, "endpoint": endpoint})
+                        # Clear token and re-authenticate
+                        self.session_token = None
+                        reauth_ok = await self.authenticate()
+                        attempted_reauth = True
+                        if reauth_ok and self.session_token and not str(self.session_token).startswith("mock_"):
+                            continue  # Retry once with new token
+                        else:
+                            logger.error("Re-authentication failed or mock token obtained; aborting retry for production flow.")
+                            break
+
+                    # Other non-200 statuses
                     error_msg = f"IIFL API request failed: {response.status_code} - {response.text}"
                     logger.error(error_msg)
-                    
-                    # Log API error
                     trading_logger.log_api_call(
                         endpoint=url,
                         method=method.upper(),
@@ -417,15 +477,12 @@ class IIFLAPIService:
                         response_time=response_time,
                         error=f"HTTP {response.status_code}: {response.text[:200]}"
                     )
-                    
                     return None
-                    
+
             except httpx.RequestError as e:
                 response_time = time.perf_counter() - start_time
                 error_msg = f"IIFL API request exception: {str(e)}"
                 logger.error(error_msg)
-                
-                # Log request exception
                 trading_logger.log_api_call(
                     endpoint=url,
                     method=method.upper(),
@@ -433,14 +490,12 @@ class IIFLAPIService:
                     response_time=response_time,
                     error=str(e)
                 )
-                
                 trading_logger.log_error("iifl_api", e, {
                     "url": url,
                     "method": method.upper(),
                     "endpoint": endpoint,
                     "response_time": response_time
                 })
-                
                 return None
                 
         except Exception as e:
