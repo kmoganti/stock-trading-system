@@ -531,12 +531,16 @@ class IIFLAPIService:
         def _has_payload(resp: Optional[Dict]) -> bool:
             if not isinstance(resp, dict):
                 return False
-            if resp.get("status") == "Ok" or resp.get("stat") == "Ok":
-                return True
+            # Prefer explicit data containers; verify they are not error lists
             for key in ["result", "data", "resultData", "candles", "history"]:
                 value = resp.get(key)
                 if isinstance(value, list) and len(value) > 0:
+                    first_item = value[0] if len(value) > 0 else {}
+                    # Detect error objects like {"status": "EC802", ...}
+                    if isinstance(first_item, dict) and str(first_item.get("status", "")).startswith("EC"):
+                        return False
                     return True
+            # Top-level Ok without data is not a payload
             return False
 
         # Build a conservative list of attempts to maximize compatibility while limiting API calls
@@ -571,10 +575,32 @@ class IIFLAPIService:
             dd_mon_yyyy_from = from_date
             dd_mon_yyyy_to = to_date
 
-        # Interval variants (keep original first)
-        interval_variants = [interval]
-        if interval.upper() == "1D":
-            interval_variants.extend(["DAY", "1d", "day", "D", "1DAY", "1 day", "1day"])
+        # Normalize interval to accepted IIFL values to avoid EC802
+        def _normalize_interval_value(user_interval: str) -> str:
+            s = str(user_interval).strip().lower()
+            # Directly accepted by IIFL
+            accepted = {"1 minute", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "60 minutes", "1 day", "weekly", "monthly"}
+            if s in accepted:
+                return s
+            mapping = {
+                # Day variants
+                "1d": "1 day", "d": "1 day", "day": "1 day", "1day": "1 day", "1 day": "1 day", "1day": "1 day",
+                # Minute variants
+                "1m": "1 minute", "1 min": "1 minute", "1minute": "1 minute", "minute": "1 minute",
+                "5m": "5 minutes", "5 min": "5 minutes", "5minute": "5 minutes",
+                "10m": "10 minutes", "10 min": "10 minutes", "10minute": "10 minutes",
+                "15m": "15 minutes", "15 min": "15 minutes", "15minute": "15 minutes",
+                "30m": "30 minutes", "30 min": "30 minutes", "30minute": "30 minutes",
+                # Hour variants -> 60 minutes
+                "60m": "60 minutes", "60 min": "60 minutes", "1h": "60 minutes", "hour": "60 minutes", "h": "60 minutes", "60minutes": "60 minutes",
+                # Week/Month variants
+                "1w": "weekly", "week": "weekly", "wk": "weekly", "w": "weekly",
+                "1mo": "monthly", "1mth": "monthly", "month": "monthly", "mth": "monthly"
+            }
+            return mapping.get(s, "1 day")
+
+        interval_value = _normalize_interval_value(interval)
+        interval_variants = [interval_value]
 
         # Symbol candidates
         is_numeric_symbol = False
