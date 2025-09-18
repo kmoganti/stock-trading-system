@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 
 import requests
+import asyncio
+from services.iifl_api import IIFLAPIService
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FILES_DIR = os.path.join(BASE_DIR, "files")
@@ -80,6 +82,31 @@ def fetch_historical_direct(token: str, instrument_id: str, from_date: str, to_d
     return resp.json()
 
 
+async def fetch_historical_via_service(instrument_id: str, from_date: str, to_date: str) -> Dict[str, Any]:
+    service = IIFLAPIService()
+    # Ensure authentication to populate Authorization header automatically
+    ok = await service._ensure_authenticated()
+    if not ok or not service.session_token or str(service.session_token).startswith("mock_"):
+        raise RuntimeError("IIFL authentication failed or mock token in use. Update IIFL credentials in environment.")
+
+    # The service's get_historical_data accepts symbol or instrumentId and interval tokens like "1D"
+    # Convert dd-Mon-YYYY (script default) to yyyy-mm-dd for the first attempt
+    try:
+        from_dt_parsed = datetime.strptime(from_date, "%d-%b-%Y")
+        to_dt_parsed = datetime.strptime(to_date, "%d-%b-%Y")
+        yyyy_mm_dd_from = from_dt_parsed.strftime("%Y-%m-%d")
+        yyyy_mm_dd_to = to_dt_parsed.strftime("%Y-%m-%d")
+    except Exception:
+        yyyy_mm_dd_from = from_date
+        yyyy_mm_dd_to = to_date
+
+    # Prefer numeric instrument id directly
+    data = await service.get_historical_data(str(instrument_id), "1D", yyyy_mm_dd_from, yyyy_mm_dd_to)
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
 def main() -> int:
     # Date range: ~1 year for a quick check
     to_dt = datetime.now()
@@ -87,15 +114,7 @@ def main() -> int:
     to_date_str = to_dt.strftime("%d-%b-%Y")
     from_date_str = from_dt.strftime("%d-%b-%Y")
 
-    if not os.path.exists(AUTH_TOKEN_PATH):
-        example = os.path.join(FILES_DIR, "auth_token.example.txt")
-        logger.error(f"{AUTH_TOKEN_PATH} not found. Copy {example} to auth_token.txt and paste your token.")
-        return 1
-
-    token = read_auth_token(AUTH_TOKEN_PATH)
-    if not token:
-        logger.error("Auth token is missing or empty.")
-        return 1
+    # Use system authentication via IIFLAPIService instead of token file
 
     try:
         contracts = load_contracts()
@@ -106,7 +125,19 @@ def main() -> int:
             return 1
 
         logger.info(f"Using RELIANCE instrumentId={reliance_id}")
-        data = fetch_historical_direct(token, reliance_id, from_date_str, to_date_str)
+        # Prefer system auth path; if it fails, fallback to token file if present
+        try:
+            data = asyncio.run(fetch_historical_via_service(reliance_id, from_date_str, to_date_str))
+        except Exception as auth_err:
+            logger.warning(f"System auth path failed: {auth_err}")
+            if os.path.exists(AUTH_TOKEN_PATH):
+                logger.info("Falling back to auth_token.txt as a temporary measure")
+                token = read_auth_token(AUTH_TOKEN_PATH)
+                if not token:
+                    raise
+                data = fetch_historical_direct(token, reliance_id, from_date_str, to_date_str)
+            else:
+                raise
         # Summarize
         result_list = (
             data.get("result")
