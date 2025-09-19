@@ -15,16 +15,17 @@ logger = logging.getLogger(__name__)
 class IIFLAPIService:
     """IIFL Markets API integration service using checksum-based authentication"""
     
-    _instance = None
-    _initialized = False
+    _instance: Optional['IIFLAPIService'] = None
     
-    def __new__(cls):
+    def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            cls._instance = super(IIFLAPIService, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
+            # The __init__ will only be called the first time.
+            cls._instance._initialized = False
         return cls._instance
     
     def __init__(self):
-        if not self._initialized:
+        if not self._initialized: # type: ignore
             # Lazy-load settings with fallback to env to avoid hard dependency on pydantic
             self._load_settings()
             self.session_token: Optional[str] = None
@@ -47,9 +48,9 @@ class IIFLAPIService:
             # Initialize an auth-code expiry hint
             try:
                 self._initialize_auth_expiry()
-            except Exception:
-                pass
-            IIFLAPIService._initialized = True
+            except Exception as e:
+                logger.debug(f"Could not initialize auth expiry on init: {e}")
+            self._initialized = True
 
     def _load_settings(self) -> None:
         """Load settings using config.settings if available, else fallback to os.environ."""
@@ -60,6 +61,7 @@ class IIFLAPIService:
             self.auth_code = settings.iifl_auth_code
             self.app_secret = settings.iifl_app_secret
             # Backward compatibility: single base_url
+            self.token_cache_file = os.path.join(os.path.dirname(__file__), '..', '.iifl_session_token')
             self.base_url = settings.iifl_base_url
             self.settings = settings
         except Exception:
@@ -68,6 +70,7 @@ class IIFLAPIService:
             self.auth_code = os.getenv("IIFL_AUTH_CODE", "")
             self.app_secret = os.getenv("IIFL_APP_SECRET", "")
             # Backward compatibility: single base_url
+            self.token_cache_file = os.path.join(os.path.dirname(__file__), '..', '.iifl_session_token')
             self.base_url = os.getenv("IIFL_BASE_URL", "https://api.iiflcapital.com/v1")
             self.settings = type("_FallbackSettings", (), {
                 "iifl_client_id": self.client_id,
@@ -75,6 +78,27 @@ class IIFLAPIService:
                 "iifl_app_secret": self.app_secret,
                 "iifl_base_url": self.base_url,
             })()
+    
+    def _load_token_from_cache(self) -> Optional[str]:
+        """Load session token from a file cache."""
+        try:
+            if os.path.exists(self.token_cache_file):
+                with open(self.token_cache_file, 'r') as f:
+                    token = f.read().strip()
+                    if token:
+                        logger.info("Loaded session token from cache file.")
+                        return token
+        except Exception as e:
+            logger.warning(f"Could not load token from cache: {e}")
+        return None
+
+    def _save_token_to_cache(self, token: str) -> None:
+        """Save session token to a file cache."""
+        try:
+            with open(self.token_cache_file, 'w') as f:
+                f.write(token)
+        except Exception as e:
+            logger.error(f"Could not save token to cache: {e}")
     
     async def get_http_client(self) -> httpx.AsyncClient:
         """Get or create an httpx.AsyncClient instance."""
@@ -258,6 +282,7 @@ class IIFLAPIService:
                     
                     if session_token:
                         self.session_token = session_token
+                        self._save_token_to_cache(session_token)
                         self.token_expiry = None  # No expiry - token valid indefinitely
                         logger.info(f"IIFL authentication successful. Token: {session_token[:10]}...")
                         trading_logger.log_system_event("iifl_auth_success", {
@@ -313,11 +338,12 @@ class IIFLAPIService:
     
     async def _ensure_authenticated(self) -> bool:
         """Ensure we have a valid authentication"""
-        # If we have a token, use it (no expiry check)
+        # If we have a token in memory, use it
         if self.session_token:
             logger.debug(f"Using existing session token: {self.session_token[:10]}...")
             return True
-            
+        
+        self.session_token = self._load_token_from_cache()
         # Only authenticate if we don't have a token
         if not self.session_token:
             logger.info("No session token found, attempting authentication")
@@ -473,6 +499,7 @@ class IIFLAPIService:
                         trading_logger.log_system_event("iifl_api_unauthorized", {"url": url, "endpoint": endpoint})
                         # Clear token and re-authenticate
                         self.session_token = None
+                        self._save_token_to_cache("") # Clear cached token
                         reauth_ok = await self.authenticate()
                         attempted_reauth = True
                         if reauth_ok and self.session_token and not str(self.session_token).startswith("mock_"):
@@ -964,6 +991,7 @@ class IIFLAPIService:
         # Clear existing session to force re-authentication
         self.session_token = None
         self.token_expiry = None
+        self._save_token_to_cache("") # Clear cached token
         
         return await self.authenticate()
     
