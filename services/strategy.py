@@ -443,14 +443,34 @@ class StrategyService:
             if category in self._watchlist_by_category:
                 self._watchlist_by_category[category] = [s for s in self._watchlist_by_category[category] if s not in [sym.upper() for sym in symbols]]
 
-    async def generate_signals(self, symbol: str) -> List[TradingSignal]:
+    async def generate_signals(self, symbol: str, category: str = "short_term") -> List[TradingSignal]:
         """Generate trading signals for a symbol"""
         try:
+            # Determine data fetching parameters based on trading category
+            interval = "1D"
+            days_to_fetch = 100
+            
+            if category == "day_trading":
+                interval = "5m"  # 5-minute interval for intraday
+                days_to_fetch = 2  # Fetch last 2 days of 5-min data for context
+            elif category == "long_term":
+                interval = "1D"
+                days_to_fetch = 250 # ~1 year of data for long term trends
+            else: # short_term
+                interval = "1D"
+                days_to_fetch = 100 # Default for swing trading
+
             # Get historical data
-            data = await self.data_fetcher.get_historical_data(symbol, days=100)
+            # By passing explicit dates, we ensure the cache key in data_fetcher is consistent
+            to_date = datetime.now()
+            from_date = to_date - timedelta(days=days_to_fetch)
+            
+            data = await self.data_fetcher.get_historical_data(
+                symbol, interval=interval, from_date=from_date.strftime("%Y-%m-%d"), to_date=to_date.strftime("%Y-%m-%d")
+            )
             
             if not data:
-                logger.warning(f"No historical data available for {symbol}, trying live data fallback")
+                logger.warning(f"No historical data for {symbol} (interval: {interval}), trying live data fallback")
                 return await self._generate_signals_from_live_data(symbol)
             
             # Calculate indicators
