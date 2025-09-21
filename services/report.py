@@ -12,6 +12,7 @@ from reportlab.graphics.charts.linecharts import HorizontalLineChart
 from reportlab.graphics.charts.piecharts import Pie
 import io
 import base64
+import os
 
 # Optional matplotlib import
 try:
@@ -76,6 +77,11 @@ class ReportService:
             output_path = f"reports/daily_report_{report_date.strftime('%Y%m%d')}.pdf"
         
         try:
+            # Ensure output directory exists
+            output_dir = os.path.dirname(output_path)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+
             # Get report data
             report_data = await self.generate_daily_report(report_date)
             

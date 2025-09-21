@@ -27,7 +27,7 @@ async def get_report_service(db: AsyncSession = Depends(get_db)) -> ReportServic
     iifl = IIFLAPIService()
     data_fetcher = DataFetcher(iifl, db_session=db)
     pnl_service = PnLService(data_fetcher, db)
-    return ReportService(pnl_service, data_fetcher, db)
+    return ReportService(pnl_service, data_fetcher)
 
 
 @router.get("/pnl/daily")
