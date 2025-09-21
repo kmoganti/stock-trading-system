@@ -12,6 +12,11 @@ from services.logging_service import trading_logger
 
 logger = logging.getLogger(__name__)
 
+# --- Global Token Cache ---
+# This simple dictionary acts as a process-level cache for the session token.
+# It survives re-instantiation of the IIFLAPIService during hot-reloads.
+_global_token_cache: Dict[str, Any] = {"token": None, "expiry": None}
+
 class IIFLAPIService:
     """IIFL Markets API integration service using checksum-based authentication"""
     
@@ -28,8 +33,6 @@ class IIFLAPIService:
         if not self._initialized: # type: ignore
             # Lazy-load settings with fallback to env to avoid hard dependency on pydantic
             self._load_settings()
-            self.session_token: Optional[str] = None
-            self.token_expiry: Optional[datetime] = None
             # Track auth code expiry for UI; IIFL auth codes are day-bound
             self.auth_code_expiry: Optional[datetime] = None
             self.http_client: Optional[httpx.AsyncClient] = None
@@ -78,6 +81,24 @@ class IIFLAPIService:
                 "iifl_app_secret": self.app_secret,
                 "iifl_base_url": self.base_url,
             })()
+
+    @property
+    def session_token(self) -> Optional[str]:
+        """Get the session token from the global cache."""
+        return _global_token_cache.get("token")
+
+    @session_token.setter
+    def session_token(self, value: Optional[str]):
+        """Set the session token in the global cache."""
+        _global_token_cache["token"] = value
+
+    @property
+    def token_expiry(self) -> Optional[datetime]:
+        return _global_token_cache.get("expiry")
+
+    @token_expiry.setter
+    def token_expiry(self, value: Optional[datetime]):
+        _global_token_cache["expiry"] = value
     
     def _load_token_from_cache(self) -> Optional[str]:
         """Load session token from a file cache."""
@@ -282,7 +303,6 @@ class IIFLAPIService:
                     
                     if session_token:
                         self.session_token = session_token
-                        self._save_token_to_cache(session_token)
                         self.token_expiry = None  # No expiry - token valid indefinitely
                         logger.info(f"IIFL authentication successful. Token: {session_token[:10]}...")
                         trading_logger.log_system_event("iifl_auth_success", {
@@ -499,7 +519,6 @@ class IIFLAPIService:
                         trading_logger.log_system_event("iifl_api_unauthorized", {"url": url, "endpoint": endpoint})
                         # Clear token and re-authenticate
                         self.session_token = None
-                        self._save_token_to_cache("") # Clear cached token
                         reauth_ok = await self.authenticate()
                         attempted_reauth = True
                         if reauth_ok and self.session_token and not str(self.session_token).startswith("mock_"):
@@ -991,7 +1010,6 @@ class IIFLAPIService:
         # Clear existing session to force re-authentication
         self.session_token = None
         self.token_expiry = None
-        self._save_token_to_cache("") # Clear cached token
         
         return await self.authenticate()
     
