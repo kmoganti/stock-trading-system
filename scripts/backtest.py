@@ -27,10 +27,14 @@ async def run_backtest(symbol: str, start_date: str, end_date: str):
 
     # 2. Fetch historical data
     try:
+        # Fetch extended warm-up window so indicators can be computed
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        warmup_start_dt = start_dt - timedelta(days=120)
         historical_data = await data_fetcher.get_historical_data(
             symbol,
             interval="1D",
-            from_date=start_date,
+            from_date=warmup_start_dt.strftime("%Y-%m-%d"),
             to_date=end_date
         )
     except Exception as e:
@@ -78,11 +82,26 @@ async def run_backtest(symbol: str, start_date: str, end_date: str):
             logger.error(f"Error generating signal at step {i}: {e}")
 
 
-    # 4. Display signals
+    # 4. Display signals (filter to requested backtest window only)
     if generated_signals:
         logger.info(f"\n--- Generated Signals for {symbol} ---")
+        # Only show signals with date >= start_date
+        try:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        except Exception:
+            start_dt = None
+        shown = 0
         for date, signal in generated_signals:
-            print(f"Date: {date}, Type: {signal.signal_type.value}, Price: {signal.entry_price:.2f}, Strategy: {signal.strategy}")
+            try:
+                date_dt = datetime.fromisoformat(str(date).split("T")[0]) if "T" in str(date) else datetime.fromisoformat(str(date))
+            except Exception:
+                # Fallback parse for YYYY-MM-DD only
+                date_dt = datetime.strptime(str(date)[:10], "%Y-%m-%d")
+            if (start_dt is None) or (date_dt >= start_dt):
+                print(f"Date: {date}, Type: {signal.signal_type.value}, Price: {signal.entry_price:.2f}, Strategy: {signal.strategy}")
+                shown += 1
+        if shown == 0:
+            logger.info("No signals fell within the requested period.")
         logger.info("-------------------------------------")
     else:
         logger.info("No signals were generated during this backtest period.")
