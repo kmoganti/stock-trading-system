@@ -7,12 +7,12 @@
     <!-- Header -->
     <div class="bg-white shadow rounded-lg card-shadow">
         <div class="px-4 py-5 sm:p-6">
-            <div class="flex justify-between items-center">
+            <div class="flex items-center">
                 <div>
                     <h1 class="text-2xl font-bold text-gray-900">Trading Signals</h1>
                     <p class="mt-1 text-sm text-gray-500">Manage and approve trading signals</p>
                 </div>
-                <div class="flex space-x-3">
+                <div class="ml-auto mr-4 flex items-center space-x-3">
                     <select x-model="statusFilter" @change="filterSignals" class="block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md">
                         <option value="">All Signals</option>
                         <option value="pending">Pending</option>
@@ -25,6 +25,10 @@
                     <button @click="refreshSignals" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
                         <i class="fas fa-sync-alt mr-2"></i>
                         Refresh
+                    </button>
+                    <button @click="clearAllSignals" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 whitespace-nowrap">
+                        <i class="fas fa-trash-alt mr-2"></i>
+                        Clear All
                     </button>
                 </div>
             </div>
@@ -302,6 +306,30 @@ document.addEventListener('alpine:init', () => {
             showToast('API Key saved successfully!', 'success');
             // Now that the key is saved, initialize the page to load signals.
             this.init();
+        },
+
+        async clearAllSignals() {
+            if (!confirm('Are you sure you want to delete ALL signals? This action cannot be undone.')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/signals/all', {
+                    method: 'DELETE',
+                    headers: {
+                        'X-API-Key': this.apiKey
+                    }
+                });
+                const result = await response.json();
+                if (response.ok) {
+                    showToast(`Successfully deleted ${result.deleted_count} signals.`, 'success');
+                    await this.loadSignals(); // Refresh the list
+                } else {
+                    showToast(result.detail || 'Failed to clear signals', 'error');
+                }
+            } catch (error) {
+                showToast('An error occurred while clearing signals.', 'error');
+            }
         },
 
         viewSignalDetails(signal) {

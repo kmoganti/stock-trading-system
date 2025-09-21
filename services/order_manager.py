@@ -413,3 +413,18 @@ class OrderManager:
         except Exception as e:
             logger.error(f"Error getting order status for {order_id}: {str(e)}")
             return None
+
+    async def clear_all_signals(self) -> int:
+        """Deletes all signals from the database. Returns the number of deleted signals."""
+        try:
+            from sqlalchemy import delete
+            stmt = delete(Signal)
+            result = await self.db.execute(stmt)
+            await self.db.commit()
+            deleted_count = result.rowcount
+            logger.info(f"Cleared {deleted_count} signals from the database.")
+            return deleted_count
+        except Exception as e:
+            logger.error(f"Error clearing signals: {str(e)}")
+            await self.db.rollback()
+            return 0

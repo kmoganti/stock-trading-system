@@ -75,37 +75,6 @@
         </div>
     </div>
 
-    <!-- Recent Reports -->
-    <div class="bg-white shadow rounded-lg card-shadow">
-        <div class="px-4 py-5 sm:p-6">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="text-lg leading-6 font-medium text-gray-900">Recent Reports</h3>
-                <a href="/reports" target="_blank" class="text-sm font-medium text-indigo-600 hover:text-indigo-500">
-                    View All Reports &rarr;
-                </a>
-            </div>
-            <div class="flow-root">
-                <ul class="max-h-64 overflow-y-auto">
-                    <template x-if="recentReports.length === 0">
-                        <p class="text-sm text-gray-500">No reports generated yet. Click "Generate Report" to create one.</p>
-                    </template>
-                    <template x-for="report in recentReports.slice(0, 5)" :key="report.filename">
-                        <li class="py-2">
-                            <div class="flex items-center space-x-4">
-                                <div class="flex-shrink-0">
-                                    <i class="fas fa-file-pdf text-red-500"></i>
-                                </div>
-                                <div class="flex-1 min-w-0">
-                                    <a :href="report.url" target="_blank" class="text-sm font-medium text-gray-800 hover:text-indigo-600 truncate" x-text="`Daily Report - ${report.date}`"></a>
-                                </div>
-                            </div>
-                        </li>
-                    </template>
-                </ul>
-            </div>
-        </div>
-    </div>
-
     <!-- Charts and Activity -->
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <!-- Equity Curve Chart -->
@@ -196,7 +165,6 @@ document.addEventListener('alpine:init', () => {
         pendingSignals: 0,
         autoTrade: false,
         recentActivity: [],
-        recentReports: [],
         equityChart: null,
         
         async init() {
@@ -248,23 +216,19 @@ document.addEventListener('alpine:init', () => {
                     this.autoTrade = false;
                 }
 
-                // Load recent reports
+                // Load recent activity
                 try {
-                    const reportsResponse = await fetch('/api/reports/list');
-                    if (reportsResponse.ok) {
-                        this.recentReports = await reportsResponse.json();
+                    const eventsResponse = await fetch('/api/events');
+                    if (eventsResponse.ok) {
+                        this.recentActivity = await eventsResponse.json();
+                    } else {
+                        console.error('Failed to load recent activity:', eventsResponse.status);
+                        this.recentActivity = [];
                     }
                 } catch (error) {
-                    console.warn('Could not load recent reports:', error);
-                    this.recentReports = [];
+                    console.warn('Could not load recent activity:', error);
+                    this.recentActivity = [];
                 }
-                
-                // Mock recent activity (in real implementation, this would come from API)
-                this.recentActivity = [
-                    { type: 'signal', message: 'New BUY signal for RELIANCE', timestamp: new Date().toISOString() },
-                    { type: 'execution', message: 'Order executed for TCS', timestamp: new Date(Date.now() - 300000).toISOString() },
-                    { type: 'risk', message: 'Daily loss limit check passed', timestamp: new Date(Date.now() - 600000).toISOString() }
-                ];
                 
             } catch (error) {
                 console.error('Error loading dashboard data:', error);

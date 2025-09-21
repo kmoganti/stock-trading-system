@@ -30,6 +30,40 @@ async def get_report_service(db: AsyncSession = Depends(get_db)) -> ReportServic
     pnl_service = PnLService(data_fetcher, db)
     return ReportService(pnl_service, data_fetcher)
 
+@router.get("/list")
+async def list_generated_reports() -> List[Dict[str, str]]:
+    """List recently generated PDF reports."""
+    reports_dir = "reports"
+    try:
+        if not os.path.exists(reports_dir):
+            return []
+        
+        # List files and sort by modification time to get the most recent first
+        report_files = sorted(
+            (os.path.join(reports_dir, f) for f in os.listdir(reports_dir) if f.endswith(".pdf")),
+            key=os.path.getmtime,
+            reverse=True
+        )
+        
+        reports_list = []
+        for file_path in report_files[:20]: # Limit to 20 most recent
+            try:
+                filename = os.path.basename(file_path)
+                # Extract date from filename like daily_report_YYYYMMDD.pdf
+                date_str = filename.replace("daily_report_", "").replace(".pdf", "")
+                report_date = datetime.strptime(date_str, "%Y%m%d").strftime("%Y-%m-%d")
+                reports_list.append({
+                    "filename": filename,
+                    "date": report_date,
+                    "url": f"/reports/{filename}"
+                })
+            except (ValueError, IndexError):
+                continue # Skip files with unexpected names
+        return reports_list
+    except Exception as e:
+        logger.error(f"Error listing reports: {str(e)}")
+        return []
+
 
 @router.get("/pnl/daily")
 async def get_daily_pnl(

@@ -12,7 +12,7 @@ from config.settings import get_settings
 from models.database import init_db, close_db
 from api import (
     system_router, signals_router, portfolio_router, 
-    risk_router, reports_router, backtest_router, settings_router
+    risk_router, reports_router, backtest_router, settings_router, events_router
 )
 from api.margin import router as margin_router
 from api.auth_management import router as auth_router
@@ -160,6 +160,7 @@ if SentryAsgiMiddleware is not None:
         logger.warning(f"Failed to add Sentry middleware: {str(e)}")
 
 # Include API routers
+# Include API routers
 app.include_router(system_router)
 app.include_router(signals_router)
 app.include_router(portfolio_router)
@@ -167,6 +168,7 @@ app.include_router(risk_router)
 app.include_router(reports_router)
 app.include_router(backtest_router)
 app.include_router(settings_router)
+app.include_router(events_router)
 app.include_router(auth_router)
 app.include_router(margin_router, prefix="/api/margin", tags=["margin"])
 app.include_router(watchlist_router)
@@ -203,6 +205,7 @@ async def log_requests(request: Request, call_next):
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/reports", StaticFiles(directory="reports"), name="reports")
 
 # Templates
 templates = Jinja2Templates(directory="templates")

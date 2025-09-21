@@ -25,11 +25,26 @@ logger = logging.getLogger(__name__)
 class DataFetcher:
     """Service for fetching and processing market data"""
     
+    _instance: Optional['DataFetcher'] = None
+    
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            # Mark as uninitialized so __init__ runs on first creation
+            cls._instance._initialized = False
+        return cls._instance
+    
     def __init__(self, iifl_service: IIFLAPIService, db_session=None):
-        self.iifl = iifl_service
-        self._db = db_session
-        self.cache: Dict[str, Any] = {}
-        self.cache_expiry: Dict[str, datetime] = {}
+        if not getattr(self, '_initialized', False):
+            self.iifl = iifl_service
+            self._db = db_session
+            # Short-term cache for frequently changing data like live prices
+            self.cache: Dict[str, Any] = {}
+            self.cache_expiry: Dict[str, datetime] = {}
+            # Long-term cache for portfolio/margin, invalidated by order events
+            self._portfolio_cache: Optional[Dict[str, Any]] = None
+            self._margin_cache: Optional[Dict[str, Any]] = None
+            self._initialized = True
     
     def _is_cache_valid(self, key: str, ttl_seconds: int = 60) -> bool:
         """Check if cached data is still valid"""
@@ -47,6 +62,15 @@ class DataFetcher:
         """Set cache with expiry"""
         self.cache[key] = data
         self.cache_expiry[key] = datetime.now() + timedelta(seconds=ttl_seconds)
+
+    def clear_portfolio_cache(self):
+        """
+        Invalidates the portfolio and margin cache.
+        This should be called after any order placement, modification, or cancellation.
+        """
+        logger.info("Clearing portfolio and margin cache due to order activity.")
+        self._portfolio_cache = None
+        self._margin_cache = None
 
     def _get_file_cache_path(self, symbol: str, interval: str) -> str:
         """Get the path for the file-based cache, ensuring the directory exists."""
@@ -532,11 +556,9 @@ class DataFetcher:
     async def get_portfolio_data(self) -> Dict[str, Any]:
         """Get complete portfolio data (holdings + positions)"""
         try:
-            cache_key = "portfolio_data"
-            
-            if self._is_cache_valid(cache_key, 30):  # 30 sec cache
-                return self.cache[cache_key]
-            
+            if self._portfolio_cache is not None:
+                return self._portfolio_cache
+
             # Fetch holdings and positions concurrently
             holdings_task = self.iifl.get_holdings()
             positions_task = self.iifl.get_positions()
@@ -598,7 +620,7 @@ class DataFetcher:
             if portfolio_data["total_invested"] > 0:
                 portfolio_data["total_pnl_percent"] = (portfolio_data["total_pnl"] / portfolio_data["total_invested"]) * 100
             
-            self._set_cache(cache_key, portfolio_data, 30)
+            self._portfolio_cache = portfolio_data
             return portfolio_data
             
         except Exception as e:
@@ -616,11 +638,9 @@ class DataFetcher:
     async def get_margin_info(self) -> Optional[Dict]:
         """Get margin and limit information"""
         try:
-            cache_key = "margin_info"
-            
-            if self._is_cache_valid(cache_key, 60):  # 1 min cache
-                return self.cache[cache_key]
-            
+            if self._margin_cache is not None:
+                return self._margin_cache
+
             # Derive available margin via pre-order margin endpoint with minimal dummy order
             try:
                 fallback = await self.calculate_required_margin(
@@ -635,7 +655,7 @@ class DataFetcher:
                         "postOrderMargin": fallback.get("post_order_margin", 0.0),
                         "fundShort": fallback.get("fund_short", 0.0),
                     }
-                    self._set_cache(cache_key, derived, 30)
+                    self._margin_cache = derived
                     return derived
             except Exception as e:
                 logger.warning(f"Fallback preordermargin failed: {str(e)}")

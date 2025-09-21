@@ -303,6 +303,21 @@ async def expire_signal(
         logger.error(f"Error expiring signal {signal_id}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.delete("/all", dependencies=[Security(get_api_key)])
+async def clear_all_signals(
+    order_manager: OrderManager = Depends(get_order_manager)
+) -> Dict[str, Any]:
+    """
+    Deletes all signals from the database. This is a destructive operation.
+    """
+    try:
+        deleted_count = await order_manager.clear_all_signals()
+        return {"success": True, "message": f"Cleared {deleted_count} signals.", "deleted_count": deleted_count}
+    except Exception as e:
+        logger.error(f"Error clearing all signals via API: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="An internal error occurred while clearing signals.")
+
+
 @router.get("/{signal_id}")
 async def get_signal_details(
     signal_id: int,

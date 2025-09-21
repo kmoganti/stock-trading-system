@@ -10,11 +10,17 @@ from services.iifl_api import IIFLAPIService
 router = APIRouter(prefix="/api/risk", tags=["risk"])
 logger = logging.getLogger(__name__)
 
-async def get_risk_service(db: AsyncSession = Depends(get_db)) -> RiskService:
+# Centralized dependency for DataFetcher
+def get_data_fetcher(db: AsyncSession = Depends(get_db)) -> DataFetcher:
+    iifl = IIFLAPIService()
+    return DataFetcher(iifl, db_session=db)
+
+def get_risk_service(
+    data_fetcher: DataFetcher = Depends(get_data_fetcher), 
+    db: AsyncSession = Depends(get_db)
+) -> RiskService:
     """Dependency to get RiskService instance"""
-    async with IIFLAPIService() as iifl:
-        data_fetcher = DataFetcher(iifl)
-        return RiskService(data_fetcher, db)
+    return RiskService(data_fetcher, db)
 
 @router.get("/events")
 async def get_risk_events(
