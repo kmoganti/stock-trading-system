@@ -24,6 +24,9 @@ import os
 from telegram_bot.bot import TelegramBot
 from telegram_bot.handlers import setup_handlers
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from services.iifl_api import IIFLAPIService
+from services.screener import ScreenerService
+from services.watchlist import WatchlistService
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
@@ -68,6 +71,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Stock Trading System...")
     trading_logger.log_system_event("application_startup", {"version": "1.0.0"})
     trading_logger.log_system_event("database_initialized")
+    app.state.market_stream_service = None
     
     # Start Telegram bot if configured
     app.state.telegram_bot = None
@@ -84,6 +88,25 @@ async def lifespan(app: FastAPI):
             logger.warning("Telegram bot not started: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set")
     except Exception as e:
         logger.error(f"Failed to start Telegram bot: {str(e)}")
+
+    # Start Market Data Stream listener
+    try:
+        from services.market_stream import MarketStreamService
+        from models.database import AsyncSessionLocal
+
+        # Authenticate first to get a token
+        iifl_service = IIFLAPIService()
+        if await iifl_service.authenticate() and not iifl_service.session_token.startswith("mock_"):
+            async with AsyncSessionLocal() as session:
+                watchlist_service = WatchlistService(session)
+                screener_service = ScreenerService(watchlist_service)
+                stream_service = MarketStreamService(iifl_service, screener_service)
+                await stream_service.connect_and_subscribe()
+                app.state.market_stream_service = stream_service
+        else:
+            logger.warning("Could not start market stream: IIFL authentication failed or using mock token.")
+    except Exception as e:
+        logger.error(f"Failed to start market data stream: {e}", exc_info=True)
     
     # Schedule daily housekeeping (log pruning) at 00:30
     try:
@@ -129,6 +152,12 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down Stock Trading System...")
     trading_logger.log_system_event("application_shutdown")
     try:
+        if getattr(app.state, "market_stream_service", None):
+            await app.state.market_stream_service.disconnect()
+            logger.info("Market stream service stopped.")
+    except Exception as e:
+        logger.error(f"Error stopping market stream service: {e}")
+    try:
         if getattr(app.state, "telegram_bot", None):
             await app.state.telegram_bot.stop()
             logger.info("Telegram bot stopped")
@@ -172,17 +201,17 @@ if SentryAsgiMiddleware is not None:
 
 # Include API routers
 # Include API routers
-app.include_router(system_router)
-app.include_router(signals_router)
-app.include_router(portfolio_router)
-app.include_router(risk_router)
-app.include_router(reports_router)
-app.include_router(backtest_router)
-app.include_router(settings_router)
-app.include_router(events_router)
-app.include_router(auth_router)
+app.include_router(system_router, prefix="/api/system", tags=["system"])
+app.include_router(signals_router, prefix="/api/signals", tags=["signals"])
+app.include_router(portfolio_router, prefix="/api/portfolio", tags=["portfolio"])
+app.include_router(risk_router, prefix="/api/risk", tags=["risk"])
+app.include_router(reports_router, prefix="/api/reports", tags=["reports"])
+app.include_router(backtest_router, prefix="/api/backtest", tags=["backtest"])
+app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
+app.include_router(events_router, prefix="/api/events", tags=["events"])
+app.include_router(auth_router, prefix="/api/auth", tags=["authentication"])
 app.include_router(margin_router, prefix="/api/margin", tags=["margin"])
-app.include_router(watchlist_router)
+app.include_router(watchlist_router, prefix="/api/watchlist", tags=["watchlist"])
 
 # HTTP logging middleware
 @app.middleware("http")
@@ -255,11 +284,6 @@ async def watchlist_page(request: Request):
 async def auth_management_page(request: Request):
     """IIFL Authentication management page"""
     return templates.TemplateResponse("auth_management.html", {"request": request})
-
-@app.get("/reports")
-async def reports_page(request: Request):
-    """Reports page"""
-    return templates.TemplateResponse("reports.html", {"request": request})
 
 if __name__ == "__main__":
     settings = get_settings()
