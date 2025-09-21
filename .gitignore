@@ -20,30 +20,29 @@ parts/
 sdist/
 var/
 wheels/
+pip-wheel-metadata/
+share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
 
-# Environment
-venv/
+# Environments
 .env
+.venv
+env/
+venv/
+ENV/
 
-# Secrets and sensitive files
-.iifl_session_token
-files/auth_token.txt
-files/holding.json
-
-# IDE / Editor files
-.vscode/
+# IDE settings
 .idea/
+.vscode/
 
-# Log files
+# Project-specific ignores
 logs/
-*.log
-
-# Database files
-*.db
-*.sqlite3
-
-# Reports
 reports/
+.iifl_session_token
+
+# Ignore the data folder but keep the nifty 100 list
+data/
+!data/ind_nifty100list.csv
