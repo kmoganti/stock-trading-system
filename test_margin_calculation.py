@@ -97,8 +97,7 @@ async def test_margin_calculation():
                     transaction_type=test_case["transaction_type"],
                     price=test_case.get("price"),
                     product=test_case["product"],
-                    exchange=test_case["exchange"],
-                    order_type=test_case.get("order_type", "MARKET")
+                    exchange=test_case["exchange"]
                 )
                 
                 if margin_info:
