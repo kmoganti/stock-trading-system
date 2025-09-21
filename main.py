@@ -95,6 +95,17 @@ async def lifespan(app: FastAPI):
         )
         # Prefetch watchlist historical data every 30 minutes
         try:
+            from services.scheduler_tasks import build_daily_intraday_watchlist
+            # Schedule to run every weekday at 9:00 AM
+            scheduler.add_job(
+                lambda: asyncio.create_task(build_daily_intraday_watchlist()),
+                CronTrigger(day_of_week='mon-fri', hour=9, minute=0),
+                name="build_intraday_watchlist"
+            )
+            logger.info("Scheduled daily intraday watchlist builder")
+        except Exception as e:
+            logger.warning(f"Failed to schedule intraday watchlist builder: {str(e)}")
+        try:
             from services.scheduler_tasks import prefetch_watchlist_historical_data
             scheduler.add_job(
                 lambda: asyncio.create_task(prefetch_watchlist_historical_data()),

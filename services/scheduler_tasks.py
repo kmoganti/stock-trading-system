@@ -7,6 +7,7 @@ from models.database import AsyncSessionLocal
 from services.watchlist import WatchlistService
 from services.iifl_api import IIFLAPIService
 from services.data_fetcher import DataFetcher
+from services.screener import ScreenerService
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ async def _get_active_symbols(session) -> List[str]:
 async def prefetch_watchlist_historical_data() -> None:
     """Prefetch historical data for active watchlist symbols.
 
-    - Runs every 1 minute (scheduled in main.py)
+    - Runs every 30 minutes (scheduled in main.py)
     - Limits concurrency to avoid overwhelming IIFL
     - Fetches last ~120 days of daily candles for each symbol
     """
@@ -53,3 +54,15 @@ async def prefetch_watchlist_historical_data() -> None:
     await asyncio.gather(*[_prefetch_symbol(s) for s in symbols])
     logger.info("Completed scheduled prefetch of watchlist historical data")
 
+
+async def build_daily_intraday_watchlist() -> None:
+    """
+    Runs the screener service to build a dynamic watchlist for intraday trading.
+    This should be scheduled to run once before the market opens.
+    """
+    logger.info("Starting scheduled task to build intraday watchlist.")
+    async with AsyncSessionLocal() as session:
+        watchlist_service = WatchlistService(session)
+        screener_service = ScreenerService(watchlist_service)
+        await screener_service.build_intraday_watchlist()
+    logger.info("Completed scheduled task for intraday watchlist.")

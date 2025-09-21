@@ -209,6 +209,50 @@ class WatchlistService:
             "total": len(symbols),
         }
 
+    async def refresh_from_list(
+        self,
+        symbols: List[str],
+        category: str,
+        deactivate_missing: bool = True,
+    ) -> dict:
+        """Refresh watchlist from a list of symbols.
+
+        - Adds any new symbols
+        - Activates existing symbols present in the list
+        - Optionally deactivates symbols for the category that are not in the list
+        """
+        upper_symbols = [s.upper() for s in symbols if s]
+
+        # Current symbols in this category (active or not)
+        current_query = select(Watchlist.symbol).where(Watchlist.category == category)
+        result = await self.db.execute(current_query)
+        current_symbols_set: Set[str] = {row[0].upper() for row in result.all()}
+
+        to_add = [s for s in upper_symbols if s not in current_symbols_set]
+        to_activate = [s for s in upper_symbols if s in current_symbols_set]
+
+        # Add new symbols
+        for sym in to_add:
+            self.db.add(Watchlist(symbol=sym, category=category, is_active=True))
+
+        # Activate existing
+        if to_activate:
+            stmt = update(Watchlist).where(Watchlist.symbol.in_(to_activate), Watchlist.category == category).values(is_active=True)
+            await self.db.execute(stmt)
+
+        # Deactivate missing ones in this category
+        deactivated_count = 0
+        if deactivate_missing:
+            missing = list(current_symbols_set.difference(upper_symbols))
+            if missing:
+                stmt = update(Watchlist).where(Watchlist.symbol.in_(missing), Watchlist.category == category).values(is_active=False)
+                result = await self.db.execute(stmt)
+                deactivated_count = getattr(result, "rowcount", 0) or 0
+
+        await self.db.commit()
+        logger.info(f"Refreshed watchlist from list: added={len(to_add)}, activated={len(to_activate)}, deactivated={deactivated_count} in category={category}")
+        return {"added": len(to_add), "activated": len(to_activate), "deactivated": deactivated_count, "category": category}
+
     async def mark_holdings_as_hold(self, symbols: List[str]) -> int:
         """Mark given symbols as 'hold' in watchlist, upserting as needed.
 

@@ -1,7 +1,7 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
-*$py.class
+*.class
 
 # C extensions
 *.so
@@ -44,5 +44,5 @@ reports/
 .iifl_session_token
 
 # Ignore the data folder but keep the nifty 100 list
-data/
+data/*
 !data/ind_nifty100list.csv
