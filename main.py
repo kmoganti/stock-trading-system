@@ -212,6 +212,11 @@ async def dashboard(request: Request):
     """Main dashboard page"""
     return templates.TemplateResponse("dashboard.html", {"request": request})
 
+@app.get("/reports")
+async def reports_page(request: Request):
+    """Reports listing page"""
+    return templates.TemplateResponse("reports.html", {"request": request})
+
 @app.get("/signals")
 async def signals_page(request: Request):
     """Signals management page"""
