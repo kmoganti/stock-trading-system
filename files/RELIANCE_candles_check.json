@@ -1,0 +1,10 @@
+{
+  "status": "Ok",
+  "message": "Success",
+  "result": [
+    {
+      "status": "EC804",
+      "message": "Invalid fromDate format. Please enter the fromDate in DD-MMM-YYYY format (e.g., 20-Sep-2020)."
+    }
+  ]
+}

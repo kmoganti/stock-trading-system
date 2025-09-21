@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 # This simple dictionary acts as a process-level cache for the session token.
 # It survives re-instantiation of the IIFLAPIService during hot-reloads.
 _global_token_cache: Dict[str, Any] = {"token": None, "expiry": None}
+# Lock to prevent race conditions during authentication
+_auth_lock = asyncio.Lock()
 
 class IIFLAPIService:
     """IIFL Markets API integration service using checksum-based authentication"""
@@ -278,98 +280,78 @@ class IIFLAPIService:
             return {}
     
     async def authenticate(self) -> bool:
-        """Authenticate with IIFL API using checksum-based authentication"""
-        if not self.auth_code:
-            logger.error("No auth code available for authentication")
-            return False
-        
-        try:
-            logger.info("Attempting IIFL API authentication with checksum method")
-            
-            # Use the working authentication method
-            response_data = await self.get_user_session(self.auth_code)
-            
-            if response_data:
-                logger.info(f"Authentication response received: {json.dumps(response_data)}")
-                
-                # Handle both old and new IIFL API response formats
-                if response_data.get("stat") == "Ok" or response_data.get("status") == "Ok":
-                    # Extract session token from multiple possible fields
-                    session_token = (response_data.get("SessionToken") or 
-                                   response_data.get("sessionToken") or 
-                                   response_data.get("session_token") or
-                                   response_data.get("userSession") or
-                                   response_data.get("token"))
-                    
-                    if session_token:
-                        self.session_token = session_token
-                        self.token_expiry = None  # No expiry - token valid indefinitely
-                        logger.info(f"IIFL authentication successful. Token: {session_token[:10]}...")
-                        trading_logger.log_system_event("iifl_auth_success", {
-                            "token_preview": session_token[:10] + "...",
-                            "token_expiry": None,
-                            "response_format": "stat" if "stat" in response_data else "status"
-                        })
-                        return True
-                    else:
-                        logger.error("No session token found in IIFL response")
-                        trading_logger.log_error("iifl_auth_no_token", {
-                            "response_keys": list(response_data.keys()),
-                            "response_sample": str(response_data)[:200]
-                        })
-                elif response_data.get("stat") == "Not_ok" or response_data.get("status") == "Not_ok":
-                    error_msg = response_data.get("emsg") or response_data.get("message", "Authentication failed")
-                    logger.error(f"IIFL authentication failed: {error_msg}")
-                    trading_logger.log_error("iifl_auth_failed", {
-                        "error_message": error_msg,
-                        "response": response_data
-                    })
-                else:
-                    # Log unknown response structure for debugging
-                    logger.warning(f"Unknown IIFL response structure: {json.dumps(response_data)}")
-                    trading_logger.log_system_event("iifl_auth_unknown_response", {
-                        "response_keys": list(response_data.keys()),
-                        "response_sample": str(response_data)[:200]
-                    })
-            
-            # If authentication fails, allow mock token only in non-production
-            logger.error("IIFL authentication failed")
-            env_name = str(getattr(self.settings, "environment", "development")).lower()
-            if env_name in ["development", "dev", "test", "testing"]:
-                logger.info("Creating mock session for development/testing")
-                self.session_token = f"mock_token_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                self.token_expiry = None
+        """Authenticate with IIFL API, protected by a lock to prevent race conditions."""
+        async with _auth_lock:
+            # Double-check if a token was acquired while waiting for the lock
+            if self.session_token:
                 return True
-            else:
-                logger.error("Authentication failed and mock tokens are disabled in this environment")
+
+            if not self.auth_code:
+                logger.error("No auth code available for authentication")
                 return False
+            
+            try:
+                logger.info("Attempting IIFL API authentication with checksum method")
                 
-        except Exception as e:
-            logger.error(f"IIFL API authentication exception: {str(e)}")
-            env_name = str(getattr(self.settings, "environment", "development")).lower()
-            if env_name in ["development", "dev", "test", "testing"]:
-                logger.info("Creating mock session for development/testing")
-                self.session_token = f"mock_token_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                self.token_expiry = None
-                return True
-            else:
-                logger.error("Authentication exception and mock tokens are disabled in this environment")
+                response_data = await self.get_user_session(self.auth_code)
+                
+                if response_data:
+                    logger.info(f"Authentication response received: {json.dumps(response_data)}")
+                    
+                    if response_data.get("stat") == "Ok" or response_data.get("status") == "Ok":
+                        session_token = (response_data.get("SessionToken") or 
+                                       response_data.get("sessionToken") or 
+                                       response_data.get("session_token") or
+                                       response_data.get("userSession") or
+                                       response_data.get("token"))
+                        
+                        if session_token:
+                            self.session_token = session_token
+                            self._save_token_to_cache(session_token)
+                            self.token_expiry = None
+                            logger.info(f"IIFL authentication successful. Token: {session_token[:10]}...")
+                            trading_logger.log_system_event("iifl_auth_success", {"token_preview": session_token[:10] + "..."})
+                            return True
+                        else:
+                            logger.error("No session token found in IIFL response")
+                            trading_logger.log_error("iifl_auth_no_token", {"response_keys": list(response_data.keys())})
+                    else:
+                        error_msg = response_data.get("emsg") or response_data.get("message", "Authentication failed")
+                        logger.error(f"IIFL authentication failed: {error_msg}")
+                        trading_logger.log_error("iifl_auth_failed", {"error_message": error_msg})
+                
+                # If authentication fails, allow mock token only in non-production
+                logger.error("IIFL authentication failed")
+                env_name = str(getattr(self.settings, "environment", "development")).lower()
+                if env_name in ["development", "dev", "test", "testing"]:
+                    logger.info("Creating mock session for development/testing")
+                    self.session_token = f"mock_token_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                    return True
+                return False
+                    
+            except Exception as e:
+                logger.error(f"IIFL API authentication exception: {str(e)}")
+                env_name = str(getattr(self.settings, "environment", "development")).lower()
+                if env_name in ["development", "dev", "test", "testing"]:
+                    logger.info("Creating mock session for development/testing")
+                    self.session_token = f"mock_token_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                    return True
                 return False
     
     async def _ensure_authenticated(self) -> bool:
         """Ensure we have a valid authentication"""
-        # If we have a token in memory, use it
+        # Fast path: If token already exists, we're good.
         if self.session_token:
             logger.debug(f"Using existing session token: {self.session_token[:10]}...")
             return True
         
+        # Slow path: No token. Try loading from file cache first.
         self.session_token = self._load_token_from_cache()
-        # Only authenticate if we don't have a token
-        if not self.session_token:
-            logger.info("No session token found, attempting authentication")
-            return await self.authenticate()
+        if self.session_token:
+            return True
         
-        return True
+        # If still no token, call the lock-protected authenticate method.
+        return await self.authenticate()
     
     async def _make_api_request(self, method: str, endpoint: str, data: Optional[Dict] = None) -> Optional[Dict]:
         """Make an authenticated API request using the session token."""
@@ -519,6 +501,7 @@ class IIFLAPIService:
                         trading_logger.log_system_event("iifl_api_unauthorized", {"url": url, "endpoint": endpoint})
                         # Clear token and re-authenticate
                         self.session_token = None
+                        self._save_token_to_cache("") # Clear cached token
                         reauth_ok = await self.authenticate()
                         attempted_reauth = True
                         if reauth_ok and self.session_token and not str(self.session_token).startswith("mock_"):
@@ -698,211 +681,84 @@ class IIFLAPIService:
             # Top-level Ok without data is not a payload
             return False
 
-        # Build a conservative list of attempts to maximize compatibility while limiting API calls
+        # Build a focused list of attempts to maximize compatibility.
         attempts: list[dict] = []
 
-        # Date variants
-        yyyy_mm_dd_from = from_date
-        yyyy_mm_dd_to = to_date
+        # --- Date and Interval Preparation ---
         try:
-            # Convert to dd-mm-yyyy as a fallback format
             from_dt_parsed = datetime.strptime(from_date, "%Y-%m-%d")
             to_dt_parsed = datetime.strptime(to_date, "%Y-%m-%d")
-            dd_mm_yyyy_from = from_dt_parsed.strftime("%d-%m-%Y")
-            dd_mm_yyyy_to = to_dt_parsed.strftime("%d-%m-%Y")
+            dd_mon_yyyy_from = from_dt_parsed.strftime("%d-%b-%Y").lower()
+            dd_mon_yyyy_to = to_dt_parsed.strftime("%d-%b-%Y").lower()
         except Exception:
-            dd_mm_yyyy_from = from_date
-            dd_mm_yyyy_to = to_date
-
-        # dd-Mon-YYYY (e.g., 17-sep-2025) lowercased variant observed to work in direct script
-        try:
-            if 'from_dt_parsed' in locals() and 'to_dt_parsed' in locals():
-                dd_mon_yyyy_from = from_dt_parsed.strftime("%d-%b-%Y").lower()
-                dd_mon_yyyy_to = to_dt_parsed.strftime("%d-%b-%Y").lower()
-            else:
-                # Try parsing dd-mm-yyyy if provided
-                _from_tmp = datetime.strptime(from_date, "%d-%m-%Y")
-                _to_tmp = datetime.strptime(to_date, "%d-%m-%Y")
-                dd_mon_yyyy_from = _from_tmp.strftime("%d-%b-%Y").lower()
-                dd_mon_yyyy_to = _to_tmp.strftime("%d-%b-%Y").lower()
-        except Exception:
-            # Fallback to original strings (may already be in desired format)
+            # If input is not YYYY-MM-DD, assume it might be the target format already
             dd_mon_yyyy_from = from_date
             dd_mon_yyyy_to = to_date
 
-        # Normalize interval to accepted IIFL values to avoid EC802
         def _normalize_interval_value(user_interval: str) -> str:
             s = str(user_interval).strip().lower()
-            # Directly accepted by IIFL
-            accepted = {"1 minute", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "60 minutes", "1 day", "weekly", "monthly"}
-            if s in accepted:
-                return s
             mapping = {
-                # Day variants
-                "1d": "1 day", "d": "1 day", "day": "1 day", "1day": "1 day", "1 day": "1 day", "1day": "1 day",
-                # Minute variants
-                "1m": "1 minute", "1 min": "1 minute", "1minute": "1 minute", "minute": "1 minute",
-                "5m": "5 minutes", "5 min": "5 minutes", "5minute": "5 minutes",
-                "10m": "10 minutes", "10 min": "10 minutes", "10minute": "10 minutes",
-                "15m": "15 minutes", "15 min": "15 minutes", "15minute": "15 minutes",
-                "30m": "30 minutes", "30 min": "30 minutes", "30minute": "30 minutes",
-                # Hour variants -> 60 minutes
-                "60m": "60 minutes", "60 min": "60 minutes", "1h": "60 minutes", "hour": "60 minutes", "h": "60 minutes", "60minutes": "60 minutes",
-                # Week/Month variants
-                "1w": "weekly", "week": "weekly", "wk": "weekly", "w": "weekly",
-                "1mo": "monthly", "1mth": "monthly", "month": "monthly", "mth": "monthly"
+                "1d": "1 day", "d": "1 day", "day": "1 day",
+                "1m": "1 minute", "5m": "5 minutes", "15m": "15 minutes", "30m": "30 minutes",
+                "60m": "60 minutes", "1h": "60 minutes",
+                "1w": "weekly", "1mo": "monthly",
             }
+            # If it's already a valid format, return it
+            if s in {"1 day", "1 minute", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "60 minutes", "weekly", "monthly"}:
+                return s
             return mapping.get(s, "1 day")
 
-        interval_value = _normalize_interval_value(interval)
-        interval_variants = [interval_value]
+        interval_norm = _normalize_interval_value(interval)
 
-        # Symbol candidates
-        is_numeric_symbol = False
-        try:
-            int(str(normalized_symbol))
-            is_numeric_symbol = True
-        except ValueError:
-            is_numeric_symbol = False
-
+        # --- Symbol Preparation ---
+        is_numeric_symbol = str(normalized_symbol).isdigit()
         symbol_variants: list[str] = []
-        # Start with exact normalized symbol
-        symbol_variants.append(str(normalized_symbol))
-        if not is_numeric_symbol:
-            # Add base-part without suffix if available
-            if 'base_part' in locals() and base_part and base_part != normalized_symbol:
-                symbol_variants.append(base_part)
-            # Ensure we try explicit -EQ suffix too
-            if not str(normalized_symbol).endswith("-EQ"):
-                symbol_variants.append(f"{base_part if 'base_part' in locals() else normalized_symbol}-EQ")
+        if is_numeric_symbol:
+            symbol_variants.append(str(normalized_symbol))
+        else:
+            base_part = normalized_symbol.split("-", 1)[0]
+            # Order: base, original, with -EQ
+            symbol_variants.extend([base_part, normalized_symbol, f"{base_part}-EQ"])
+        
         # Dedupe while preserving order
         seen: set[str] = set()
         symbol_variants = [s for s in symbol_variants if not (s in seen or seen.add(s))]
 
-        # 1) Primary: symbol + fromDate/toDate
-        for sym in symbol_variants:
-            for iv in interval_variants:
-                attempts.append({
-                    "payload": {"symbol": sym, "interval": iv, "fromDate": yyyy_mm_dd_from, "toDate": yyyy_mm_dd_to},
-                    "desc": "symbol_fromDate_toDate"
-                })
-
-        # 2) Alternative keys: symbol + from/to
-        for sym in symbol_variants:
-            for iv in interval_variants:
-                attempts.append({
-                    "payload": {"symbol": sym, "interval": iv, "from": yyyy_mm_dd_from, "to": yyyy_mm_dd_to},
-                    "desc": "symbol_from_to"
-                })
-
-        # 3) Alternative date format: dd-mm-yyyy with from/to
-        for sym in symbol_variants:
-            for iv in interval_variants:
-                attempts.append({
-                    "payload": {"symbol": sym, "interval": iv, "from": dd_mm_yyyy_from, "to": dd_mm_yyyy_to},
-                    "desc": "symbol_from_to_ddmmyyyy"
-                })
-
-        # 3b) Alternative date format: dd-mm-yyyy with fromDate/toDate
-        for sym in symbol_variants:
-            for iv in interval_variants:
-                attempts.append({
-                    "payload": {"symbol": sym, "interval": iv, "fromDate": dd_mm_yyyy_from, "toDate": dd_mm_yyyy_to},
-                    "desc": "symbol_fromDate_toDate_ddmmyyyy"
-                })
-
-        # 3c) Alternative date format: dd-Mon-YYYY lower with fromDate/toDate
-        for sym in symbol_variants:
-            for iv in interval_variants:
-                attempts.append({
-                    "payload": {"symbol": sym, "interval": iv, "fromDate": dd_mon_yyyy_from, "toDate": dd_mon_yyyy_to},
-                    "desc": "symbol_fromDate_toDate_ddMonYYYY"
-                })
-
-        # 4) Include exchange hints with symbol
-        for sym in symbol_variants:
-            for iv in interval_variants:
-                attempts.append({
-                    "payload": {"symbol": sym, "exchange": "NSEEQ", "interval": iv, "fromDate": yyyy_mm_dd_from, "toDate": yyyy_mm_dd_to},
-                    "desc": "symbol_exchange_fromDate_toDate"
-                })
-        # 4a-alt) exchange + dd-Mon-YYYY lower
-        for sym in symbol_variants:
-            for iv in interval_variants:
-                attempts.append({
-                    "payload": {"symbol": sym, "exchange": "NSEEQ", "interval": iv, "fromDate": dd_mon_yyyy_from, "toDate": dd_mon_yyyy_to},
-                    "desc": "symbol_exchange_fromDate_toDate_ddMonYYYY"
-                })
-        # 4a) exchange 'NSE' + series 'EQ'
-        for sym in symbol_variants:
-            for iv in interval_variants:
-                attempts.append({
-                    "payload": {"symbol": sym, "exchange": "NSE", "series": "EQ", "interval": iv, "fromDate": yyyy_mm_dd_from, "toDate": yyyy_mm_dd_to},
-                    "desc": "symbol_exchange_series_fromDate_toDate"
-                })
-        # 4b) exchangeSegment flavor
-        for sym in symbol_variants:
-            for iv in interval_variants:
-                attempts.append({
-                    "payload": {"symbol": sym, "exchange": "NSE", "exchangeSegment": "NSECM", "interval": iv, "fromDate": yyyy_mm_dd_from, "toDate": yyyy_mm_dd_to},
-                    "desc": "symbol_exchange_exchangeSegment_fromDate_toDate"
-                })
-        # 4c) exch/exchType short keys commonly used in some IIFL specs
-        for sym in symbol_variants:
-            for iv in interval_variants:
-                attempts.append({
-                    "payload": {"symbol": sym, "exch": "N", "exchType": "C", "interval": iv, "fromDate": yyyy_mm_dd_from, "toDate": yyyy_mm_dd_to},
-                    "desc": "symbol_exch_exchType_fromDate_toDate"
-                })
-        # 4d) startDate/endDate key variants
-        for sym in symbol_variants:
-            for iv in interval_variants:
-                attempts.append({
-                    "payload": {"symbol": sym, "interval": iv, "startDate": yyyy_mm_dd_from, "endDate": yyyy_mm_dd_to},
-                    "desc": "symbol_startDate_endDate"
-                })
-        for sym in symbol_variants:
-            for iv in interval_variants:
-                attempts.append({
-                    "payload": {"symbol": sym, "interval": iv, "startDate": dd_mm_yyyy_from, "endDate": dd_mm_yyyy_to},
-                    "desc": "symbol_startDate_endDate_ddmmyyyy"
-                })
-
-        # 5) Numeric instrumentId variant if the provided symbol is numeric
+        # --- Attempt Definitions ---
+        # Attempt 1: The most reliable format found in other scripts (instrumentId, dd-Mon-YYYY)
         if is_numeric_symbol:
-            for iv in interval_variants:
+            attempts.append({
+                "payload": {"instrumentId": str(normalized_symbol), "exchange": "NSEEQ", "interval": interval_norm, "fromDate": dd_mon_yyyy_from, "toDate": dd_mon_yyyy_to},
+                "desc": "instrumentId_exchange_ddMonYYYY"
+            })
+
+        # Attempt 2: Symbol with exchange and dd-Mon-YYYY date format
+        for sym in symbol_variants:
+            if not str(sym).isdigit():
                 attempts.append({
-                    "payload": {"instrumentId": str(normalized_symbol), "interval": iv, "fromDate": yyyy_mm_dd_from, "toDate": yyyy_mm_dd_to},
-                    "desc": "instrumentId_fromDate_toDate"
+                    "payload": {"symbol": sym, "exchange": "NSEEQ", "interval": interval_norm, "fromDate": dd_mon_yyyy_from, "toDate": dd_mon_yyyy_to},
+                    "desc": "symbol_exchange_ddMonYYYY"
                 })
-                attempts.append({
-                    "payload": {"instrumentId": str(normalized_symbol), "interval": iv, "from": yyyy_mm_dd_from, "to": yyyy_mm_dd_to},
-                    "desc": "instrumentId_from_to"
-                })
-                # instrument key alias
-                attempts.append({
-                    "payload": {"instrument": str(normalized_symbol), "interval": iv, "fromDate": yyyy_mm_dd_from, "toDate": yyyy_mm_dd_to},
-                    "desc": "instrument_fromDate_toDate"
-                })
-                # instrumentId with dd-Mon-YYYY lower
-                attempts.append({
-                    "payload": {"instrumentId": str(normalized_symbol), "interval": iv, "fromDate": dd_mon_yyyy_from, "toDate": dd_mon_yyyy_to},
-                    "desc": "instrumentId_fromDate_toDate_ddMonYYYY"
-                })
-                # instrumentId + exchange with dd-Mon-YYYY lower and explicit interval variant
-                attempts.append({
-                    "payload": {"instrumentId": str(normalized_symbol), "exchange": "NSEEQ", "interval": iv, "fromDate": dd_mon_yyyy_from, "toDate": dd_mon_yyyy_to},
-                    "desc": "instrumentId_exchange_fromDate_toDate_ddMonYYYY"
-                })
+
+        # Attempt 3: Basic symbol with YYYY-MM-DD date format
+        for sym in symbol_variants:
+            attempts.append({
+                "payload": {"symbol": sym, "interval": interval, "fromDate": from_date, "toDate": to_date},
+                "desc": "symbol_raw_interval_and_date"
+            })
+
+        # Attempt 4: Basic instrumentId with YYYY-MM-DD date format
+        if is_numeric_symbol:
+            attempts.append({
+                "payload": {"instrumentId": str(normalized_symbol), "interval": interval, "fromDate": from_date, "toDate": to_date},
+                "desc": "instrumentId_raw_interval_and_date"
+            })
 
         # Dedupe attempts to minimize redundant calls
         unique_attempts: list[dict] = []
         seen_keys: set[str] = set()
         for a in attempts:
-            try:
-                k = json.dumps(a.get("payload", {}), sort_keys=True)
-            except Exception:
-                k = str(a.get("payload", {}))
+            k = json.dumps(a.get("payload", {}), sort_keys=True)
             if k not in seen_keys:
                 seen_keys.add(k)
                 unique_attempts.append(a)
@@ -913,7 +769,6 @@ class IIFLAPIService:
         except Exception:
             max_attempts = 10
         if len(unique_attempts) > max_attempts:
-            logger.info(f"Truncating historical attempts from {len(unique_attempts)} to {max_attempts}")
             unique_attempts = unique_attempts[:max_attempts]
 
         # Execute attempts sequentially until one yields data
@@ -1010,6 +865,7 @@ class IIFLAPIService:
         # Clear existing session to force re-authentication
         self.session_token = None
         self.token_expiry = None
+        self._save_token_to_cache("") # Clear cached token
         
         return await self.authenticate()
     

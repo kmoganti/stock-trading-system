@@ -211,35 +211,39 @@ class StrategyService:
             previous = df.iloc[-2]
             
             # Check for bullish crossover (9 EMA crosses above 21 EMA)
-            if (previous['ema_9'] <= previous['ema_21'] and 
-                current['ema_9'] > current['ema_21'] and
-                current['rsi'] < 70):  # Not overbought
-                
-                stop_loss = current['close'] * 0.98  # 2% stop loss
-                take_profit = current['close'] * 1.06  # 6% take profit
+            is_bullish_crossover = previous['ema_9'] <= previous['ema_21'] and current['ema_9'] > current['ema_21']
+            is_uptrend = current['close'] > current['ema_50']  # Trend filter
+            has_volume = current['volume_ratio'] > 1.0  # Volume confirmation
+            
+            if is_bullish_crossover and is_uptrend and has_volume and current['rsi'] < 70:
+                # Volatility-adjusted stop-loss and take-profit using ATR
+                stop_loss = current['close'] - (1.5 * current['atr'])
+                take_profit = current['close'] + (3.0 * current['atr'])  # 2:1 Risk/Reward
                 
                 return TradingSignal(
                     symbol=symbol,
                     signal_type=SignalType.BUY,
                     entry_price=current['close'],
                     stop_loss=stop_loss,
-                    target_price=take_profit,
+                    target_price=take_profit, 
                     confidence=0.7,
                     strategy="ema_crossover",
                     metadata={
                         "ema_9": current['ema_9'],
                         "ema_21": current['ema_21'],
-                        "rsi": current['rsi']
+                        "rsi": current['rsi'],
+                        "atr": current['atr']
                     }
                 )
             
             # Check for bearish crossover (9 EMA crosses below 21 EMA)
-            elif (previous['ema_9'] >= previous['ema_21'] and 
-                  current['ema_9'] < current['ema_21'] and
-                  current['rsi'] > 30):  # Not oversold
-                
-                stop_loss = current['close'] * 1.02  # 2% stop loss for short
-                take_profit = current['close'] * 0.94  # 6% take profit for short
+            is_bearish_crossover = previous['ema_9'] >= previous['ema_21'] and current['ema_9'] < current['ema_21']
+            is_downtrend = current['close'] < current['ema_50'] # Trend filter
+            
+            if is_bearish_crossover and is_downtrend and has_volume and current['rsi'] > 30:
+                # Volatility-adjusted stop-loss and take-profit using ATR
+                stop_loss = current['close'] + (1.5 * current['atr'])
+                take_profit = current['close'] - (3.0 * current['atr'])
                 
                 return TradingSignal(
                     symbol=symbol,
@@ -252,7 +256,8 @@ class StrategyService:
                     metadata={
                         "ema_9": current['ema_9'],
                         "ema_21": current['ema_21'],
-                        "rsi": current['rsi']
+                        "rsi": current['rsi'],
+                        "atr": current['atr']
                     }
                 )
             
@@ -279,14 +284,15 @@ class StrategyService:
                     symbol=symbol,
                     signal_type=SignalType.BUY,
                     entry_price=current['close'],
-                    stop_loss=current['close'] * 0.97,
+                    stop_loss=current['close'] - (2 * current['atr']), # Wider stop for mean reversion
                     target_price=current['bb_middle'],
                     confidence=0.75,
                     strategy="bollinger_bands",
                     metadata={
                         "bb_position": "lower_band",
                         "rsi": current['rsi'],
-                        "volume_ratio": current['volume_ratio']
+                        "volume_ratio": current['volume_ratio'],
+                        "atr": current['atr']
                     }
                 )
             
@@ -299,14 +305,15 @@ class StrategyService:
                     symbol=symbol,
                     signal_type=SignalType.SELL,
                     entry_price=current['close'],
-                    stop_loss=current['close'] * 1.03,
+                    stop_loss=current['close'] + (2 * current['atr']),
                     target_price=current['bb_middle'],
                     confidence=0.75,
                     strategy="bollinger_bands",
                     metadata={
                         "bb_position": "upper_band",
                         "rsi": current['rsi'],
-                        "volume_ratio": current['volume_ratio']
+                        "volume_ratio": current['volume_ratio'],
+                        "atr": current['atr']
                     }
                 )
             
@@ -325,25 +332,28 @@ class StrategyService:
             current = df.iloc[-1]
             previous = df.iloc[-2]
             
+            has_volume = current['volume_ratio'] > 1.1
+            
             # Bullish momentum: MACD crosses above signal line with strong momentum
             if (previous['macd'] <= previous['macd_signal'] and
                 current['macd'] > current['macd_signal'] and
                 current['price_momentum'] > 0.02 and  # 2% momentum
-                current['rsi'] > 40 and current['rsi'] < 70):
+                has_volume and current['rsi'] > 40 and current['rsi'] < 70):
                 
                 return TradingSignal(
                     symbol=symbol,
                     signal_type=SignalType.BUY,
                     entry_price=current['close'],
-                    stop_loss=current['close'] * 0.96,
-                    target_price=current['close'] * 1.08,
+                    stop_loss=current['close'] - (1.5 * current['atr']),
+                    target_price=current['close'] + (3.0 * current['atr']),
                     confidence=0.8,
                     strategy="momentum",
                     metadata={
                         "macd": current['macd'],
                         "macd_signal": current['macd_signal'],
                         "price_momentum": current['price_momentum'],
-                        "rsi": current['rsi']
+                        "rsi": current['rsi'],
+                        "atr": current['atr']
                     }
                 )
             
@@ -351,21 +361,22 @@ class StrategyService:
             elif (previous['macd'] >= previous['macd_signal'] and
                   current['macd'] < current['macd_signal'] and
                   current['price_momentum'] < -0.02 and  # -2% momentum
-                  current['rsi'] > 30 and current['rsi'] < 60):
+                  has_volume and current['rsi'] > 30 and current['rsi'] < 60):
                 
                 return TradingSignal(
                     symbol=symbol,
                     signal_type=SignalType.SELL,
                     entry_price=current['close'],
-                    stop_loss=current['close'] * 1.04,
-                    target_price=current['close'] * 0.92,
+                    stop_loss=current['close'] + (1.5 * current['atr']),
+                    target_price=current['close'] - (3.0 * current['atr']),
                     confidence=0.8,
                     strategy="momentum",
                     metadata={
                         "macd": current['macd'],
                         "macd_signal": current['macd_signal'],
                         "price_momentum": current['price_momentum'],
-                        "rsi": current['rsi']
+                        "rsi": current['rsi'],
+                        "atr": current['atr']
                     }
                 )
             

@@ -4,6 +4,9 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 import logging
 import httpx
+import json
+import os
+from pathlib import Path
 from .iifl_api import IIFLAPIService
 try:
     from .watchlist import WatchlistService  # type: ignore
@@ -44,6 +47,89 @@ class DataFetcher:
         """Set cache with expiry"""
         self.cache[key] = data
         self.cache_expiry[key] = datetime.now() + timedelta(seconds=ttl_seconds)
+
+    def _get_file_cache_path(self, symbol: str, interval: str) -> str:
+        """Get the path for the file-based cache, ensuring the directory exists."""
+        cache_dir = Path("data/hist_cache")
+        cache_dir.mkdir(exist_ok=True)
+        # Sanitize symbol for a safe filename
+        safe_symbol = "".join(c for c in symbol if c.isalnum() or c in ('-', '_')).rstrip() or "default"
+        return str(cache_dir / f"{safe_symbol}_{interval}.parquet")
+
+    def _read_from_file_cache(self, path: str) -> Optional[Dict[str, Any]]:
+        """Read data and metadata from the file cache."""
+        try:
+            if not HAS_PANDAS or not os.path.exists(path):
+                return None
+            
+            df = pd.read_parquet(path)
+            if df.empty or 'last_updated' not in df.attrs:
+                return None
+            
+            # Convert DataFrame back to list of dicts for consistent processing
+            df_reset = df.reset_index()
+            # Ensure date is in ISO format string
+            if pd.api.types.is_datetime64_any_dtype(df_reset['date']):
+                df_reset['date'] = df_reset['date'].dt.strftime('%Y-%m-%dT%H:%M:%S')
+
+            return {
+                "last_updated": df.attrs['last_updated'],
+                "data": df_reset.to_dict('records')
+            }
+        except Exception as e:
+            logger.warning(f"Could not read or parse file cache at {path}: {e}")
+        return None
+
+    def _write_to_file_cache(self, path: str, data: List[Dict]):
+        """Write data to the file cache with a timestamp."""
+        try:
+            if not HAS_PANDAS or not data:
+                return
+            df = pd.DataFrame(data)
+            df['date'] = pd.to_datetime(df['date'])
+            df = df.set_index('date')
+            df.attrs['last_updated'] = datetime.now().isoformat()
+            df.to_parquet(path)
+        except Exception as e:
+            logger.error(f"Could not write to file cache at {path}: {e}")
+
+    def _standardize_historical_payload(self, payload_list: List[Any]) -> List[Dict]:
+        """Standardize historical data from various formats (list of dicts, list of lists)"""
+        standardized_data: List[Dict] = []
+        if not payload_list:
+            return standardized_data
+
+        # Handle nested structure like {"result": [{"candles": [...]}]}
+        if payload_list and isinstance(payload_list[0], dict) and "candles" in payload_list[0]:
+            if isinstance(payload_list[0]["candles"], list):
+                payload_list = payload_list[0]["candles"]
+
+        for item in payload_list:
+            if isinstance(item, dict):
+                # Existing logic for list of dicts
+                item = item or {}
+                standardized_item = {k.lower(): v for k, v in item.items()}
+                if 'date' not in standardized_item:
+                    for candidate in ['time', 'timestamp', 'datetime']:
+                        if candidate in standardized_item:
+                            standardized_item['date'] = standardized_item[candidate]
+                            break
+                standardized_data.append(standardized_item)
+            elif isinstance(item, list) and len(item) >= 6:
+                # Handle array format [timestamp, open, high, low, close, volume]
+                try:
+                    standardized_item = {
+                        "date": item[0],
+                        "open": float(item[1]),
+                        "high": float(item[2]),
+                        "low": float(item[3]),
+                        "close": float(item[4]),
+                        "volume": int(item[5])
+                    }
+                    standardized_data.append(standardized_item)
+                except (ValueError, IndexError) as e:
+                    logger.warning(f"Skipping malformed candle data (list format): {item} - {e}")
+        return standardized_data
 
     async def _get_contract_id_map(self) -> Dict[str, Any]:
         """Download and cache NSEEQ contract map tradingSymbol -> instrumentId.
@@ -165,104 +251,92 @@ class DataFetcher:
             logger.error(f"Error creating DataFrame for {symbol}: {str(e)}", exc_info=True)
             return None
     
+    async def _fetch_and_standardize(self, symbol: str, interval: str, from_date: str, to_date: str) -> Optional[List[Dict]]:
+        """Internal helper to fetch data from IIFL, handle fallbacks, and standardize the output."""
+        # First attempt: use symbol as provided
+        result = await self.iifl.get_historical_data(symbol, interval, from_date, to_date)
+        
+        is_successful_response = isinstance(result, dict) and \
+                                 (result.get("status", "").lower() == "ok" or result.get("stat", "").lower() == "ok")
+
+        if is_successful_response and result:
+            standardized_data = self._standardize_historical_payload(result.get("result", []))
+            if standardized_data:
+                return standardized_data
+        
+        if result:
+            error_message = result.get('message') or result.get('emsg', 'Unknown API error') if isinstance(result, dict) else 'Unknown API error'
+            logger.info(f"Primary fetch for {symbol} returned no data: {error_message}")
+
+        # Fallback: resolve instrumentId via contracts and retry once
+        resolved_id = await self._resolve_instrument_id(symbol)
+        if resolved_id and str(resolved_id) != str(symbol):
+            logger.info(f"Primary fetch failed for '{symbol}', retrying with resolved instrumentId '{resolved_id}'")
+            result2 = await self.iifl.get_historical_data(str(resolved_id), interval, from_date, to_date)
+            is_successful_response2 = isinstance(result2, dict) and \
+                                      (result2.get("status", "").lower() == "ok" or result2.get("stat", "").lower() == "ok")
+
+            if is_successful_response2 and result2:
+                standardized_data = self._standardize_historical_payload(result2.get("result", []))
+                if standardized_data:
+                    return standardized_data
+            elif result2:
+                error_message2 = result2.get('message') or result2.get('emsg', 'Unknown API error') if isinstance(result2, dict) else 'Unknown API error'
+                logger.warning(f"Fallback instrumentId fetch for {symbol} (id={resolved_id}) also failed: {error_message2}")
+        
+        return None
+
     async def get_historical_data(self, symbol: str, interval: str = "1D", 
-                                days: int = 100, from_date: Optional[str] = None, 
+                                days: int = 120, from_date: Optional[str] = None, 
                                 to_date: Optional[str] = None) -> Optional[List[Dict]]:
         """Get historical OHLCV data"""
         try:
-            # Calculate date range if not provided
             if not from_date or not to_date:
                 to_date = datetime.now().strftime("%Y-%m-%d")
                 from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-            
-            # Use a consistent cache key based on the date range
-            cache_key = f"hist_{symbol}_{interval}_{from_date}_{to_date}"
-            
-            # Check cache first
-            cached_data = self._get_cache(cache_key)
-            if cached_data is not None:
-                return cached_data
-            
-            # First attempt: use symbol as provided (fast path, no extra network for contracts)
-            result = await self.iifl.get_historical_data(symbol, interval, from_date, to_date)
-            
-            # Accept both 'status' and legacy 'stat' fields, but also tolerate
-            # providers returning non-"Ok" even when data exists
-            has_ok_flag = bool(result) and isinstance(result, dict) and (
-                result.get("status") == "Ok" or result.get("stat") == "Ok"
-            )
-            # Data may still be present even when status is not Ok
-            payload_list = []
-            if isinstance(result, dict):
-                # Prefer common containers in order
-                for key in ["result", "data", "resultData", "candles", "history"]:
-                    candidate = result.get(key)
-                    if isinstance(candidate, list):
-                        payload_list = candidate
-                        break
 
-            if has_ok_flag or (isinstance(payload_list, list) and len(payload_list) > 0):
-                if payload_list:
-                    # Standardize data format
-                    standardized_data: List[Dict] = []
-                    for item in payload_list:
-                        item = item or {}
-                        standardized_item = {k.lower(): v for k, v in item.items()}
-                        # Normalize date field
-                        if 'date' not in standardized_item:
-                            for candidate in ['time', 'timestamp', 'datetime']:
-                                if candidate in standardized_item:
-                                    standardized_item['date'] = standardized_item[candidate]
-                                    break
-                        standardized_data.append(standardized_item)
+            file_cache_path = self._get_file_cache_path(symbol, interval)
+            cached_file_content = self._read_from_file_cache(file_cache_path)
 
-                    # Cache for 30 minutes to limit repeated IIFL calls
-                    self._set_cache(cache_key, standardized_data, 1800)
-                    return standardized_data
-            elif result:
-                error_message = result.get('message') or result.get('emsg', 'Unknown API error') if isinstance(result, dict) else 'Unknown API error'
-                logger.info(f"Primary fetch for {symbol} returned no data: {error_message}")
+            if cached_file_content:
+                last_updated = datetime.fromisoformat(cached_file_content.get("last_updated", "1970-01-01T00:00:00"))
+                cached_data = cached_file_content.get("data", [])
 
-            # Fallback: resolve instrumentId via contracts and retry once
-            try:
-                resolved_id = await self._resolve_instrument_id(symbol)
-            except Exception as e:
-                resolved_id = None
-                logger.debug(f"InstrumentId resolution skipped/failed for {symbol}: {str(e)}")
+                # If cache is from today and has data, fetch only the delta
+                if last_updated.date() == datetime.now().date() and cached_data:
+                    last_candle_date_str = cached_data[-1].get("date", "1970-01-01")
+                    last_candle_dt = datetime.fromisoformat(last_candle_date_str.split("T")[0])
+                    
+                    delta_from_date = (last_candle_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+                    
+                    if to_date > delta_from_date:
+                        logger.info(f"Cache hit for {symbol}. Fetching delta from {delta_from_date} to {to_date}.")
+                        delta_data = await self._fetch_and_standardize(symbol, interval, delta_from_date, to_date)
+                        
+                        if delta_data:
+                            # Combine, update file cache, and return
+                            combined_data = cached_data + delta_data
+                            self._write_to_file_cache(file_cache_path, combined_data)
+                            return combined_data
+                    
+                    # If no delta is needed, just return the cached data
+                    return cached_data
 
-            if resolved_id and str(resolved_id) != str(symbol):
-                result2 = await self.iifl.get_historical_data(str(resolved_id), interval, from_date, to_date)
-                has_ok_flag2 = bool(result2) and isinstance(result2, dict) and (
-                    result2.get("status") == "Ok" or result2.get("stat") == "Ok"
-                )
-                payload_list2 = []
-                if isinstance(result2, dict):
-                    for key in ["result", "data", "resultData", "candles", "history"]:
-                        candidate = result2.get(key)
-                        if isinstance(candidate, list):
-                            payload_list2 = candidate
-                            break
-                if has_ok_flag2 or (isinstance(payload_list2, list) and len(payload_list2) > 0):
-                    if payload_list2:
-                        standardized_data: List[Dict] = []
-                        for item in payload_list2:
-                            item = item or {}
-                            standardized_item = {k.lower(): v for k, v in item.items()}
-                            if 'date' not in standardized_item:
-                                for candidate in ['time', 'timestamp', 'datetime']:
-                                    if candidate in standardized_item:
-                                        standardized_item['date'] = standardized_item[candidate]
-                                        break
-                            standardized_data.append(standardized_item)
-                        # Cache for 30 minutes to limit repeated IIFL calls
-                        self._set_cache(cache_key, standardized_data, 1800)
-                        return standardized_data
-                elif result2:
-                    error_message2 = result2.get('message') or result2.get('emsg', 'Unknown API error') if isinstance(result2, dict) else 'Unknown API error'
-                    logger.warning(f"Fallback instrumentId fetch failed for {symbol} (id={resolved_id}): {error_message2}")
+            # Perform a full fetch if cache is missing, stale, or delta fetch failed
+            logger.info(f"Performing full historical data fetch for {symbol} from {from_date} to {to_date}.")
+            full_data = await self._fetch_and_standardize(symbol, interval, from_date, to_date)
+
+            if full_data:
+                self._write_to_file_cache(file_cache_path, full_data)
+                return full_data
             
+            # If fetch fails, return stale data from cache if available
+            if cached_file_content and cached_file_content.get("data"):
+                logger.warning(f"Full fetch failed for {symbol}, returning stale data from file cache.")
+                return cached_file_content.get("data")
+
             return []
-            
+
         except Exception as e:
             logger.error(f"Error fetching historical data for {symbol}: {str(e)}")
             return []
