@@ -155,6 +155,26 @@ async def generate_eod_report(
         else:
             target_date = date.today()
         
+        # Ensure PnL record exists/updated so it shows up in listings
+        try:
+            from sqlalchemy import select
+            # Update today's PnL with latest data; for past dates, ensure placeholder exists
+            if target_date == date.today():
+                try:
+                    await report_service.pnl_service.update_daily_pnl()
+                except Exception as inner_e:
+                    logger.warning(f"Failed to update today's PnL before report generation: {str(inner_e)}")
+            # Ensure a row exists for the target date
+            stmt = select(PnLReport).where(PnLReport.date == target_date)
+            result = await db.execute(stmt)
+            existing = result.scalar_one_or_none()
+            if not existing:
+                placeholder = PnLReport(date=target_date)
+                db.add(placeholder)
+                await db.commit()
+        except Exception as ensure_e:
+            logger.warning(f"Could not ensure PnL record for {target_date}: {str(ensure_e)}")
+
         # Generate comprehensive daily report
         trading_logger.main_logger.info(
             f"SYSTEM: Generating EOD report", 
