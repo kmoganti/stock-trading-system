@@ -8,6 +8,7 @@ import os
 from models.database import get_db
 from models.pnl_reports import PnLReport
 from services.report import ReportService
+from services.logging_service import trading_logger
 from services.pnl import PnLService
 from services.data_fetcher import DataFetcher
 from services.iifl_api import IIFLAPIService
@@ -155,15 +156,27 @@ async def generate_eod_report(
             target_date = date.today()
         
         # Generate comprehensive daily report
+        trading_logger.main_logger.info(
+            f"SYSTEM: Generating EOD report", 
+        )
         report_data = await report_service.generate_daily_report(target_date)
         
         if "error" in report_data:
-            raise HTTPException(status_code=500, detail=report_data["error"])
+            err_msg = report_data["error"]
+            trading_logger.log_error(
+                component="reports",
+                error=Exception(err_msg),
+                context={"stage": "generate_daily_report", "target_date": target_date.isoformat()}
+            )
+            raise HTTPException(status_code=500, detail=err_msg)
         
         # Generate PDF report
         pdf_path = await report_service.generate_pdf_report(target_date)
         
         logger.info(f"EOD report generated for {target_date}: {pdf_path}")
+        trading_logger.main_logger.info(
+            f"SYSTEM: EOD report generated for {target_date} -> {pdf_path}"
+        )
         
         return {
             "message": f"EOD report generated successfully for {target_date}",
@@ -176,6 +189,17 @@ async def generate_eod_report(
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
     except Exception as e:
         logger.error(f"Error generating EOD report: {str(e)}", exc_info=True)
+        try:
+            trading_logger.log_error(
+                component="reports",
+                error=e,
+                context={
+                    "endpoint": "/api/reports/eod/generate",
+                    "report_date": report_date,
+                }
+            )
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/weekly")
