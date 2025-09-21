@@ -178,13 +178,15 @@ document.addEventListener('alpine:init', () => {
             try {
                 // Load portfolio summary
                 const portfolioResponse = await fetch('/api/portfolio/summary');
-                const portfolioData = await portfolioResponse.json();
-                
-                this.totalEquity = portfolioData.total_equity || 0;
-                this.positionsCount = (portfolioData.positions || []).length;
-                
-                // Use total P&L from portfolio data as daily P&L for now
-                this.dailyPnL = portfolioData.total_pnl || 0;
+                if (portfolioResponse.ok) {
+                    const portfolioData = await portfolioResponse.json();
+                    this.totalEquity = portfolioData.total_equity || 0;
+                    this.positionsCount = (portfolioData.positions || []).length;
+                    this.dailyPnL = portfolioData.total_pnl || 0;
+                } else {
+                    console.error('Failed to load portfolio data:', portfolioResponse.status);
+                    showToast('Could not load portfolio summary', 'error');
+                }
                 
                 // Load pending signals - handle potential API errors gracefully
                 try {
@@ -308,9 +310,12 @@ document.addEventListener('alpine:init', () => {
                 const response = await fetch('/api/reports/eod/generate', { method: 'POST' });
                 
                 if (response.ok) {
-                    showToast('Report generation started', 'success');
+                    const result = await response.json();
+                    showToast(result.message || 'Report generation started', 'success');
                 } else {
-                    showToast('Failed to generate report', 'error');
+                    const errorText = await response.text();
+                    console.error('Report generation failed:', response.status, errorText);
+                    showToast(`Failed to generate report: ${response.status}`, 'error');
                 }
             } catch (error) {
                 console.error('Error generating report:', error);

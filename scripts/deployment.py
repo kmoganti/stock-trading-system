@@ -186,6 +186,11 @@ def main():
                 pip_cmd = "venv\\Scripts\\pip install -r requirements.txt"
                 python_cmd = "venv\\Scripts\\python run.py"
             else:  # Unix/Linux
+                # Add alembic upgrade command for unix-like systems
+                run_command(
+                    "venv/bin/alembic upgrade head",
+                    "Applying database migrations"
+                )
                 pip_cmd = "venv/bin/pip install -r requirements.txt"
                 python_cmd = "venv/bin/python run.py"
             

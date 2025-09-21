@@ -146,7 +146,7 @@ async def generate_eod_report(
     report_date: str = None,
     db: AsyncSession = Depends(get_db),
     report_service: ReportService = Depends(get_report_service)
-) -> Dict[str, str]:
+) -> Dict[str, Any]:
     """Generate end-of-day report on demand"""
     logger.info(f"Request to generate EOD report for {report_date or 'today'}")
     try:

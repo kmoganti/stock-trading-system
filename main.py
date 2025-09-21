@@ -67,8 +67,6 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Stock Trading System...")
     trading_logger.log_system_event("application_startup", {"version": "1.0.0"})
-    await init_db()
-    logger.info("Database initialized")
     trading_logger.log_system_event("database_initialized")
     
     # Start Telegram bot if configured
@@ -95,19 +93,19 @@ async def lifespan(app: FastAPI):
             CronTrigger(hour=0, minute=30),
             name="daily_housekeeping"
         )
-        # Prefetch watchlist historical data every 1 minute
+        # Prefetch watchlist historical data every 30 minutes
         try:
             from services.scheduler_tasks import prefetch_watchlist_historical_data
             scheduler.add_job(
                 lambda: asyncio.create_task(prefetch_watchlist_historical_data()),
-                IntervalTrigger(minutes=1),
-                name="prefetch_watchlist_historical_1m",
+                IntervalTrigger(minutes=30),
+                name="prefetch_watchlist_historical_30m",
                 coalesce=True,
                 max_instances=1
             )
-            logger.info("Scheduled 1-minute watchlist historical prefetch")
+            logger.info("Scheduled 30-minute watchlist historical prefetch")
         except Exception as e:
-            logger.warning(f"Failed to schedule 1-minute historical prefetch: {str(e)}")
+            logger.warning(f"Failed to schedule 30-minute historical prefetch: {str(e)}")
         scheduler.start()
         app.state.scheduler = scheduler
         logger.info("Scheduler started for daily housekeeping")
