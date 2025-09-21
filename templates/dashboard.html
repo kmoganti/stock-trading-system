@@ -163,7 +163,7 @@ document.addEventListener('alpine:init', () => {
         
         async init() {
             await this.loadDashboardData();
-            this.initEquityChart();
+            await this.initEquityChart();
             // Refresh every 30 seconds
             setInterval(() => this.loadDashboardData(), 30000);
         },
@@ -230,32 +230,30 @@ document.addEventListener('alpine:init', () => {
             }
         },
         
-        initEquityChart() {
+        async initEquityChart() {
             const ctx = document.getElementById('equityChart').getContext('2d');
-            
-            // Mock equity curve data
-            const dates = [];
-            const equityValues = [];
-            const baseEquity = 100000;
-            
-            for (let i = 30; i >= 0; i--) {
-                const date = new Date();
-                date.setDate(date.getDate() - i);
-                dates.push(date.toLocaleDateString());
-                
-                // Generate mock equity curve with some randomness
-                const randomChange = (Math.random() - 0.5) * 2000;
-                const equity = i === 30 ? baseEquity : equityValues[equityValues.length - 1] + randomChange;
-                equityValues.push(Math.max(equity, baseEquity * 0.9)); // Don't go below 90% of base
+
+            // Fetch real equity curve data
+            let points = [];
+            try {
+                const resp = await fetch('/api/reports/equity-curve?days=30');
+                if (resp.ok) {
+                    points = await resp.json();
+                }
+            } catch (e) {
+                console.warn('Failed to load equity curve:', e);
             }
-            
+
+            const dates = points.map(p => new Date(p.date).toLocaleDateString());
+            const equityValues = points.map(p => p.equity || 0);
+
             this.equityChart = new Chart(ctx, {
                 type: 'line',
                 data: {
-                    labels: dates,
+                    labels: dates.length ? dates : [],
                     datasets: [{
                         label: 'Equity',
-                        data: equityValues,
+                        data: equityValues.length ? equityValues : [],
                         borderColor: 'rgb(99, 102, 241)',
                         backgroundColor: 'rgba(99, 102, 241, 0.1)',
                         tension: 0.1,
@@ -265,6 +263,7 @@ document.addEventListener('alpine:init', () => {
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
                     scales: {
                         y: {
                             beginAtZero: false,
@@ -278,6 +277,14 @@ document.addEventListener('alpine:init', () => {
                     plugins: {
                         legend: {
                             display: false
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    const val = context.parsed.y;
+                                    return 'Equity: ₹' + (val != null ? val.toLocaleString() : '—');
+                                }
+                            }
                         }
                     }
                 }
@@ -303,6 +310,22 @@ document.addEventListener('alpine:init', () => {
         
         async refreshData() {
             await this.loadDashboardData();
+            try {
+                // Update equity chart with fresh data
+                const resp = await fetch('/api/reports/equity-curve?days=30');
+                if (resp.ok) {
+                    const points = await resp.json();
+                    const labels = points.map(p => new Date(p.date).toLocaleDateString());
+                    const values = points.map(p => p.equity || 0);
+                    if (this.equityChart) {
+                        this.equityChart.data.labels = labels;
+                        this.equityChart.data.datasets[0].data = values;
+                        this.equityChart.update();
+                    }
+                }
+            } catch (e) {
+                console.warn('Failed to refresh equity curve:', e);
+            }
             showToast('Data refreshed', 'success');
         },
         

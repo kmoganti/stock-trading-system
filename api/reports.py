@@ -30,6 +30,21 @@ async def get_report_service(db: AsyncSession = Depends(get_db)) -> ReportServic
     pnl_service = PnLService(data_fetcher, db)
     return ReportService(pnl_service, data_fetcher)
 
+@router.get("/equity-curve")
+async def get_equity_curve(
+    days: int = 30,
+    pnl_service: PnLService = Depends(get_pnl_service)
+) -> List[Dict[str, Any]]:
+    """Return equity curve points for the last N days.
+    Each point contains { date: YYYY-MM-DD, equity: number, daily_pnl, cumulative_pnl }.
+    """
+    try:
+        equity_curve = await pnl_service.get_equity_curve(days)
+        return equity_curve
+    except Exception as e:
+        logger.error(f"Error getting equity curve: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/list")
 async def list_generated_reports() -> List[Dict[str, str]]:
     """List recently generated PDF reports."""
