@@ -23,7 +23,7 @@ async def _get_active_symbols(session) -> List[str]:
 async def prefetch_watchlist_historical_data() -> None:
     """Prefetch historical data for active watchlist symbols.
 
-    - Runs every 30 minutes (scheduled in main.py)
+    - Runs every 1 minute (scheduled in main.py)
     - Limits concurrency to avoid overwhelming IIFL
     - Fetches last ~120 days of daily candles for each symbol
     """

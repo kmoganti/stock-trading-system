@@ -56,40 +56,82 @@ class DataFetcher:
         safe_symbol = "".join(c for c in symbol if c.isalnum() or c in ('-', '_')).rstrip() or "default"
         return str(cache_dir / f"{safe_symbol}_{interval}.parquet")
 
-    def _read_from_file_cache(self, path: str) -> Optional[Dict[str, Any]]:
-        """Read data and metadata from the file cache."""
-        try:
-            if not HAS_PANDAS or not os.path.exists(path):
-                return None
-            
-            df = pd.read_parquet(path)
-            if df.empty or 'last_updated' not in df.attrs:
-                return None
-            
-            # Convert DataFrame back to list of dicts for consistent processing
-            df_reset = df.reset_index()
-            # Ensure date is in ISO format string
-            if pd.api.types.is_datetime64_any_dtype(df_reset['date']):
-                df_reset['date'] = df_reset['date'].dt.strftime('%Y-%m-%dT%H:%M:%S')
+    def _get_file_cache_meta_path(self, symbol: str, interval: str) -> str:
+        """Get the path for the JSON sidecar cache (robust fallback without pandas)."""
+        cache_dir = Path("data/hist_cache")
+        cache_dir.mkdir(exist_ok=True)
+        safe_symbol = "".join(c for c in symbol if c.isalnum() or c in ('-', '_')).rstrip() or "default"
+        return str(cache_dir / f"{safe_symbol}_{interval}.json")
 
-            return {
-                "last_updated": df.attrs['last_updated'],
-                "data": df_reset.to_dict('records')
-            }
+    def _read_from_file_cache(self, path: str) -> Optional[Dict[str, Any]]:
+        """Read data and metadata from the file cache.
+
+        Tries JSON sidecar first for robustness (works without pandas/pyarrow),
+        falling back to parquet if available.
+        """
+        try:
+            # Try JSON sidecar first
+            json_path = os.path.splitext(path)[0] + ".json"
+            if os.path.exists(json_path):
+                try:
+                    with open(json_path, "r", encoding="utf-8") as f:
+                        obj = json.load(f)
+                        if isinstance(obj, dict) and "data" in obj and isinstance(obj.get("data"), list):
+                            return {
+                                "last_updated": obj.get("last_updated") or obj.get("lastUpdated") or "1970-01-01T00:00:00",
+                                "data": obj.get("data")
+                            }
+                except Exception as e:
+                    logger.warning(f"Could not read JSON cache at {json_path}: {e}")
+
+            # Fallback to parquet if pandas is available
+            if HAS_PANDAS and os.path.exists(path):
+                try:
+                    df = pd.read_parquet(path)
+                    if df.empty or 'last_updated' not in df.attrs:
+                        return None
+                    df_reset = df.reset_index()
+                    if pd.api.types.is_datetime64_any_dtype(df_reset['date']):
+                        df_reset['date'] = df_reset['date'].dt.strftime('%Y-%m-%dT%H:%M:%S')
+                    return {
+                        "last_updated": df.attrs['last_updated'],
+                        "data": df_reset.to_dict('records')
+                    }
+                except Exception as e:
+                    logger.warning(f"Could not read or parse parquet cache at {path}: {e}")
         except Exception as e:
-            logger.warning(f"Could not read or parse file cache at {path}: {e}")
+            logger.warning(f"Error accessing file cache: {e}")
         return None
 
     def _write_to_file_cache(self, path: str, data: List[Dict]):
-        """Write data to the file cache with a timestamp."""
+        """Write data to the file cache with a timestamp.
+
+        Always writes a JSON sidecar for robustness; writes parquet if supported.
+        """
         try:
-            if not HAS_PANDAS or not data:
+            if not data:
                 return
-            df = pd.DataFrame(data)
-            df['date'] = pd.to_datetime(df['date'])
-            df = df.set_index('date')
-            df.attrs['last_updated'] = datetime.now().isoformat()
-            df.to_parquet(path)
+            timestamp = datetime.now().isoformat()
+
+            # Write JSON sidecar
+            json_path = os.path.splitext(path)[0] + ".json"
+            try:
+                with open(json_path, "w", encoding="utf-8") as f:
+                    json.dump({"last_updated": timestamp, "data": data}, f)
+            except Exception as e:
+                logger.error(f"Could not write JSON cache at {json_path}: {e}")
+
+            # Best-effort parquet write
+            if HAS_PANDAS:
+                try:
+                    df = pd.DataFrame(data)
+                    if 'date' in df.columns:
+                        df['date'] = pd.to_datetime(df['date'])
+                        df = df.set_index('date')
+                    df.attrs['last_updated'] = timestamp
+                    df.to_parquet(path)
+                except Exception as e:
+                    logger.warning(f"Could not write parquet cache at {path}: {e}")
         except Exception as e:
             logger.error(f"Could not write to file cache at {path}: {e}")
 
