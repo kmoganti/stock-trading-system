@@ -4,41 +4,151 @@
 
 {% block content %}
 <div x-data="reportsPage" class="space-y-6">
+    <!-- Header -->
     <div class="bg-white shadow rounded-lg card-shadow">
-        <div class="px-4 py-5 sm:p-6">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="text-lg leading-6 font-medium text-gray-900">Generated Reports</h3>
-                <button @click="loadReports" class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
-                    <i class="fas fa-sync-alt mr-2"></i>
+        <div class="px-4 py-5 sm:p-6 flex items-center justify-between">
+            <div>
+                <h1 class="text-2xl font-bold text-gray-900">Reports</h1>
+                <p class="mt-1 text-sm text-gray-500">View and download generated reports</p>
+            </div>
+            <div class="flex items-center space-x-3">
+                <input x-model="filters.date" type="date" class="border-gray-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" />
+                <button @click="fetchReports" class="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+                    <i class="fas fa-rotate mr-2"></i>
                     Refresh
                 </button>
+                <button @click="generateReport" class="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700">
+                    <i class="fas fa-file-pdf mr-2"></i>
+                    Generate EOD Report
+                </button>
             </div>
-            <div class="flow-root">
-                <ul class="divide-y divide-gray-200">
-                    <template x-if="reports.length === 0">
-                        <li class="py-4">
-                            <p class="text-sm text-gray-500 text-center">No reports found. Generate one from the dashboard.</p>
-                        </li>
-                    </template>
-                    <template x-for="report in reports" :key="report.filename">
-                        <li class="py-4">
-                            <div class="flex items-center space-x-4">
-                                <div class="flex-shrink-0">
-                                    <i class="fas fa-file-pdf text-red-500 text-2xl"></i>
-                                </div>
-                                <div class="flex-1 min-w-0">
-                                    <p class="text-sm font-medium text-gray-900 truncate" x-text="`Daily Report - ${report.date}`"></p>
-                                    <p class="text-sm text-gray-500 truncate" x-text="report.filename"></p>
-                                </div>
-                                <div>
-                                    <a :href="report.url" target="_blank" class="inline-flex items-center px-3 py-1.5 border border-transparent text-sm font-medium rounded-md text-indigo-700 bg-indigo-100 hover:bg-indigo-200">
-                                        View Report
-                                    </a>
-                                </div>
-                            </div>
-                        </li>
-                    </template>
-                </ul>
+        </div>
+    </div>
+
+    <!-- Summary Cards -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div class="bg-white overflow-hidden shadow rounded-lg card-shadow">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-calendar-day text-indigo-600 text-2xl"></i>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Reports in Range</dt>
+                            <dd class="text-lg font-medium text-gray-900" x-text="summary.reports_count"></dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="bg-white overflow-hidden shadow rounded-lg card-shadow">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-chart-line text-green-600 text-2xl"></i>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Total P&L (last 30d)</dt>
+                            <dd class="text-lg font-medium" :class="summary.total_pnl >= 0 ? 'text-green-600' : 'text-red-600'" x-text="formatCurrency(summary.total_pnl)"></dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="bg-white overflow-hidden shadow rounded-lg card-shadow">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-percent text-blue-600 text-2xl"></i>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Win Rate (last 30d)</dt>
+                            <dd class="text-lg font-medium text-gray-900" x-text="formatPercentage(summary.win_rate)"></dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="bg-white shadow rounded-lg card-shadow">
+        <div class="border-b border-gray-200">
+            <nav class="-mb-px flex space-x-8 px-6">
+                <button @click="activeTab = 'list'"
+                        class="py-4 px-1 border-b-2 font-medium text-sm"
+                        :class="activeTab === 'list' ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'">
+                    Generated Reports
+                </button>
+                <button @click="activeTab = 'metrics'"
+                        class="py-4 px-1 border-b-2 font-medium text-sm"
+                        :class="activeTab === 'metrics' ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'">
+                    Performance Metrics
+                </button>
+            </nav>
+        </div>
+
+        <!-- Reports List Tab -->
+        <div x-show="activeTab === 'list'" class="p-6">
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Daily P&L</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cumulative P&L</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Trades</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Win Rate</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200">
+                        <template x-for="report in reports" :key="report.date">
+                            <tr class="hover:bg-gray-50">
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="formatDate(report.date)"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium" :class="report.daily_pnl >= 0 ? 'text-green-600' : 'text-red-600'" x-text="formatCurrency(report.daily_pnl)"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="formatCurrency(report.cumulative_pnl)"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="report.total_trades"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="formatPercentage(report.win_rate)"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                    <button @click="downloadPdf(report.date)" class="text-indigo-600 hover:text-indigo-900">
+                                        <i class="fas fa-download mr-1"></i>
+                                        PDF
+                                    </button>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+                <div x-show="reports.length === 0" class="text-center py-8">
+                    <i class="fas fa-file-circle-question text-gray-400 text-4xl mb-4"></i>
+                    <p class="text-gray-500">No reports available</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Metrics Tab -->
+        <div x-show="activeTab === 'metrics'" class="p-6">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="bg-gray-50 p-4 rounded-lg">
+                    <h3 class="text-sm font-medium text-gray-700 mb-2">Sharpe Ratio</h3>
+                    <p class="text-2xl font-semibold" x-text="(metrics.metrics?.sharpe_ratio ?? 0).toFixed(2)"></p>
+                </div>
+                <div class="bg-gray-50 p-4 rounded-lg">
+                    <h3 class="text-sm font-medium text-gray-700 mb-2">Max Drawdown</h3>
+                    <p class="text-2xl font-semibold" x-text="formatPercentage(metrics.metrics?.max_drawdown ?? 0)"></p>
+                </div>
+                <div class="bg-gray-50 p-4 rounded-lg">
+                    <h3 class="text-sm font-medium text-gray-700 mb-2">Win Rate</h3>
+                    <p class="text-2xl font-semibold" x-text="formatPercentage(metrics.metrics?.win_rate ?? 0)"></p>
+                </div>
+                <div class="bg-gray-50 p-4 rounded-lg">
+                    <h3 class="text-sm font-medium text-gray-700 mb-2">Avg Daily P&L</h3>
+                    <p class="text-2xl font-semibold" x-text="formatCurrency(metrics.metrics?.avg_daily_pnl ?? 0)"></p>
+                </div>
             </div>
         </div>
     </div>
@@ -47,15 +157,102 @@
 <script>
 document.addEventListener('alpine:init', () => {
     Alpine.data('reportsPage', () => ({
+        activeTab: 'list',
+        filters: { date: '' },
         reports: [],
+        summary: { reports_count: 0, total_pnl: 0, win_rate: 0 },
+        metrics: { metrics: {} },
+
         async init() {
-            await this.loadReports();
+            await Promise.all([
+                this.fetchReports(),
+                this.fetchSummary(),
+                this.fetchMetrics(),
+            ]);
         },
-        async loadReports() {
-            const response = await fetch('/api/reports/list');
-            if (response.ok) {
-                this.reports = await response.json();
+
+        async fetchReports() {
+            try {
+                // Reuse summary endpoint which returns list of reports
+                const response = await fetch('/api/reports/pnl/summary?days=30');
+                if (!response.ok) throw new Error('Failed to load reports');
+                const data = await response.json();
+                this.reports = Array.isArray(data.reports) ? data.reports : [];
+            } catch (e) {
+                console.error('Error fetching reports:', e);
+                showToast('Error loading reports', 'error');
             }
+        },
+
+        async fetchSummary() {
+            try {
+                const response = await fetch('/api/reports/pnl/summary?days=30');
+                if (!response.ok) throw new Error('Failed to load summary');
+                const data = await response.json();
+                this.summary = {
+                    reports_count: data.reports_count || (data.reports ? data.reports.length : 0),
+                    total_pnl: data.total_pnl || 0,
+                    win_rate: this.computeWinRate(data.reports || [])
+                };
+            } catch (e) {
+                console.error('Error fetching summary:', e);
+            }
+        },
+
+        async fetchMetrics() {
+            try {
+                const response = await fetch('/api/reports/performance/metrics?days=30');
+                if (!response.ok) throw new Error('Failed to load metrics');
+                this.metrics = await response.json();
+            } catch (e) {
+                console.error('Error fetching metrics:', e);
+            }
+        },
+
+        async generateReport() {
+            try {
+                const dateParam = this.filters.date ? `?report_date=${this.filters.date}` : '';
+                const response = await fetch(`/api/reports/eod/generate${dateParam}`, { method: 'POST' });
+                if (response.ok) {
+                    showToast('Report generation started', 'success');
+                    await this.fetchReports();
+                } else {
+                    showToast('Failed to generate report', 'error');
+                }
+            } catch (e) {
+                console.error('Error generating report:', e);
+                showToast('Error generating report', 'error');
+            }
+        },
+
+        async downloadPdf(dateStr) {
+            try {
+                const iso = new Date(dateStr).toISOString().slice(0,10);
+                const url = `/api/reports/eod/${iso}`;
+                window.open(url, '_blank');
+            } catch (e) {
+                console.error('Error downloading PDF:', e);
+                showToast('Error downloading PDF', 'error');
+            }
+        },
+
+        computeWinRate(reports) {
+            if (!reports.length) return 0;
+            const winRates = reports.map(r => r.win_rate || 0);
+            const avg = winRates.reduce((a,b) => a+b, 0) / winRates.length;
+            return avg;
+        },
+
+        formatCurrency(amount) {
+            if (amount === null || amount === undefined) return '₹0';
+            return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(amount);
+        },
+        formatPercentage(value) {
+            if (value === null || value === undefined) return '0.00%';
+            return (value * 100).toFixed(2) + '%';
+        },
+        formatDate(dateStr) {
+            try { return new Date(dateStr).toLocaleDateString('en-IN'); } catch { return dateStr; }
         }
     }));
 });

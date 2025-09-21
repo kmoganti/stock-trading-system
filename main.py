@@ -245,6 +245,11 @@ async def auth_management_page(request: Request):
     """IIFL Authentication management page"""
     return templates.TemplateResponse("auth_management.html", {"request": request})
 
+@app.get("/reports")
+async def reports_page(request: Request):
+    """Reports page"""
+    return templates.TemplateResponse("reports.html", {"request": request})
+
 if __name__ == "__main__":
     settings = get_settings()
     
