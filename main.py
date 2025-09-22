@@ -200,18 +200,17 @@ if SentryAsgiMiddleware is not None:
         logger.warning(f"Failed to add Sentry middleware: {str(e)}")
 
 # Include API routers
-# Include API routers
-app.include_router(system_router, prefix="/api/system", tags=["system"])
-app.include_router(signals_router, prefix="/api/signals", tags=["signals"])
-app.include_router(portfolio_router, prefix="/api/portfolio", tags=["portfolio"])
-app.include_router(risk_router, prefix="/api/risk", tags=["risk"])
-app.include_router(reports_router, prefix="/api/reports", tags=["reports"])
-app.include_router(backtest_router, prefix="/api/backtest", tags=["backtest"])
-app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
-app.include_router(events_router, prefix="/api/events", tags=["events"])
-app.include_router(auth_router, prefix="/api/auth", tags=["authentication"])
+app.include_router(system_router)
+app.include_router(signals_router)
+app.include_router(portfolio_router)
+app.include_router(risk_router)
+app.include_router(reports_router)
+app.include_router(backtest_router)
+app.include_router(settings_router)
+app.include_router(events_router)
+app.include_router(auth_router)
+app.include_router(watchlist_router)
 app.include_router(margin_router, prefix="/api/margin", tags=["margin"])
-app.include_router(watchlist_router, prefix="/api/watchlist", tags=["watchlist"])
 
 # HTTP logging middleware
 @app.middleware("http")
