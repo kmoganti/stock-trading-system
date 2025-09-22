@@ -23,10 +23,12 @@ class Settings(BaseSettings):
     max_daily_loss: float = Field(0.05, env="MAX_DAILY_LOSS")  # 5%
     min_price: float = Field(10.0, env="MIN_PRICE")
     min_liquidity: float = Field(100000.0, env="MIN_LIQUIDITY")
+    min_intraday_volume: int = Field(1000000, env="MIN_INTRADAY_VOLUME")
     
     # Telegram Bot
-    telegram_bot_token: str = Field(..., env="TELEGRAM_BOT_TOKEN")
-    telegram_chat_id: str = Field(..., env="TELEGRAM_CHAT_ID")
+    enable_telegram: bool = Field(True, env="ENABLE_TELEGRAM")
+    telegram_bot_token: Optional[str] = Field(None, env="TELEGRAM_BOT_TOKEN")
+    telegram_chat_id: Optional[str] = Field(None, env="TELEGRAM_CHAT_ID")
     
     # Database
     database_url: str = Field("sqlite+aiosqlite:///./trading_system.db", env="DATABASE_URL")

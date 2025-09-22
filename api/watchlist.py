@@ -27,6 +27,39 @@ async def get_watchlist(
         logger.error(f"Error getting watchlist: {str(e)}")
         raise HTTPException(status_code=500, detail="Error retrieving watchlist")
 
+from fastapi import Request
+
+@router.get("/live")
+async def get_watchlist_live_snapshot(request: Request):
+    """Return the current live snapshot for watchlist symbols if the market stream is active."""
+    try:
+        # Access app state to fetch the stream service
+        stream = getattr(request.app.state, 'market_stream_service', None)
+
+        if not stream:
+            return []
+        # Provide a lean snapshot to the UI
+        # Optional ranking/sorting
+        sort_by = request.query_params.get("sortBy") or "pctChange"
+        direction = request.query_params.get("direction") or "desc"
+        limit_param = request.query_params.get("limit")
+        try:
+            limit = int(limit_param) if limit_param else None
+        except Exception:
+            limit = None
+
+        data = stream.get_watchlist_snapshot()
+        key = (lambda x: x.get(sort_by) or 0)
+        reverse = (direction.lower() != "asc")
+        try:
+            data.sort(key=key, reverse=reverse)
+        except Exception:
+            pass
+        return data[:limit] if (limit and limit > 0) else data
+    except Exception as e:
+        logger.error(f"Error returning watchlist live snapshot: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Error fetching live snapshot")
+
 @router.post("")
 async def add_to_watchlist(
     update: WatchlistUpdate,
@@ -75,7 +108,7 @@ async def change_symbol_category(
     try:
         if not symbol or not category:
             raise HTTPException(status_code=400, detail="Symbol and category are required")
-        if category not in {"long_term", "short_term", "day_trading", "hold"}:
+        if category not in {"long_term", "short_term", "day_trading", "hold", "short_sell"}:
             raise HTTPException(status_code=400, detail="Invalid category. Must be one of: long_term, short_term, day_trading, hold")
         service = WatchlistService(db)
         await service.set_category(symbol, category)
@@ -93,7 +126,7 @@ async def refresh_nifty100_watchlist(
 ):
     """Populate the watchlist with Nifty-100 CSV content into the chosen category."""
     try:
-        if category not in {"long_term", "short_term", "day_trading", "hold"}:
+        if category not in {"long_term", "short_term", "day_trading", "hold", "short_sell"}:
             raise HTTPException(status_code=400, detail="Invalid category")
         service = WatchlistService(db)
         result = await service.refresh_from_csv(
@@ -192,7 +225,7 @@ async def migrate_watchlist_category(
     Set active_only=true to only migrate active rows.
     """
     try:
-        if target not in {"long_term", "short_term", "day_trading", "hold"}:
+        if target not in {"long_term", "short_term", "day_trading", "hold", "short_sell"}:
             raise HTTPException(status_code=400, detail="Invalid category")
         service = WatchlistService(db)
         affected = await service.set_category_for_all(target, active_only=active_only)

@@ -6,6 +6,7 @@ from .reports import router as reports_router
 from .backtest import router as backtest_router
 from .settings import router as settings_router
 from .events import router as events_router
+from .watchlist import router as watchlist_router
 
 __all__ = [
     "system_router",
@@ -15,5 +16,6 @@ __all__ = [
     "reports_router",
     "backtest_router",
     "settings_router",
-    "events_router"
+    "events_router",
+    "watchlist_router",
 ]

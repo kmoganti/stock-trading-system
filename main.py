@@ -29,6 +29,7 @@ from services.screener import ScreenerService
 from services.watchlist import WatchlistService
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+from fastapi import WebSocket, WebSocketDisconnect
 
 # Ensure logs directory exists
 os.makedirs('logs', exist_ok=True)
@@ -76,16 +77,18 @@ async def lifespan(app: FastAPI):
     # Start Telegram bot if configured
     app.state.telegram_bot = None
     try:
-        telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
-        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        if telegram_token and telegram_chat_id:
+        from config.settings import get_settings as _gs
+        __s = _gs()
+        telegram_token = os.getenv("TELEGRAM_BOT_TOKEN") or getattr(__s, "telegram_bot_token", None)
+        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID") or getattr(__s, "telegram_chat_id", None)
+        if getattr(__s, "enable_telegram", True) and telegram_token and telegram_chat_id:
             bot = TelegramBot()
             await setup_handlers(bot)
             await bot.start()
             app.state.telegram_bot = bot
             logger.info("Telegram bot started")
         else:
-            logger.warning("Telegram bot not started: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set")
+            logger.warning("Telegram bot not started: disabled or credentials not set")
     except Exception as e:
         logger.error(f"Failed to start Telegram bot: {str(e)}")
 
@@ -211,7 +214,7 @@ app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 app.include_router(events_router, prefix="/api/events", tags=["events"])
 app.include_router(auth_router, prefix="/api/auth", tags=["authentication"])
 app.include_router(margin_router, prefix="/api/margin", tags=["margin"])
-app.include_router(watchlist_router, prefix="/api/watchlist", tags=["watchlist"])
+app.include_router(watchlist_router)
 
 # HTTP logging middleware
 @app.middleware("http")
@@ -243,9 +246,14 @@ async def log_requests(request: Request, call_next):
         trading_logger.log_error("api", e, {"path": str(request.url.path), "method": request.method})
         raise
 
-# Mount static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
-app.mount("/reports", StaticFiles(directory="reports"), name="reports")
+# Mount static files (skip if directories not present to facilitate testing)
+try:
+    if os.path.isdir("static"):
+        app.mount("/static", StaticFiles(directory="static"), name="static")
+    if os.path.isdir("reports"):
+        app.mount("/reports", StaticFiles(directory="reports"), name="reports")
+except Exception as _e:
+    logger.warning(f"Static mount skipped: {_e}")
 
 # Templates
 templates = Jinja2Templates(directory="templates")
@@ -279,6 +287,26 @@ async def settings_page(request: Request):
 async def watchlist_page(request: Request):
     """Watchlist management page"""
     return templates.TemplateResponse("watchlist.html", {"request": request})
+
+@app.websocket("/ws/watchlist")
+async def watchlist_ws(ws: WebSocket):
+    await ws.accept()
+    try:
+        while True:
+            await asyncio.sleep(1.0)
+            stream = getattr(app.state, "market_stream_service", None)
+            if stream:
+                # Optional: handle sort/limit via a lightweight default server ranking
+                snapshot = stream.get_watchlist_snapshot()
+                try:
+                    snapshot.sort(key=lambda x: x.get("pctChange") or 0, reverse=True)
+                except Exception:
+                    pass
+                await ws.send_json({"type": "watchlist", "data": snapshot[:50]})
+            else:
+                await ws.send_json({"type": "watchlist", "data": []})
+    except WebSocketDisconnect:
+        return
 
 @app.get("/auth")
 async def auth_management_page(request: Request):

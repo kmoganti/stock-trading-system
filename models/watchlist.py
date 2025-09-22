@@ -9,6 +9,7 @@ class WatchlistCategory(PyEnum):
     SHORT_TERM = "short_term"
     DAY_TRADING = "day_trading"
     HOLD = "hold"
+    SHORT_SELL = "short_sell"
 
 
 class Watchlist(Base):

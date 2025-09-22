@@ -395,8 +395,8 @@ class IIFLAPIService:
 
             # Enhanced request logging
             logger.info(f"IIFL API Request: {method.upper()} {url}")
-            logger.info(f"Request Headers: {json.dumps(masked_headers)}")
-            logger.info(f"Request Body: {json.dumps(request_body)}")
+            logger.debug(f"Request Headers: {json.dumps(masked_headers)}")
+            logger.debug(f"Request Body: {json.dumps(request_body)}")
             
             # Log to specialized API logger
             trading_logger.log_system_event("iifl_api_request", {
@@ -450,11 +450,11 @@ class IIFLAPIService:
 
                     # Enhanced response logging
                     logger.info(f"IIFL API Response: {response.status_code} in {response_time:.3f}s")
-                    logger.info(f"Response Headers: {json.dumps(dict(response.headers))}")
+                    logger.debug(f"Response Headers: {json.dumps(dict(response.headers))}")
 
                     try:
                         response_data = response.json()
-                        logger.info(f"Response Body: {json.dumps(response_data)}")
+                        logger.debug(f"Response Body: {json.dumps(response_data)}")
 
                         # Log API call
                         trading_logger.log_api_call(
@@ -490,7 +490,7 @@ class IIFLAPIService:
                         })
 
                     except json.JSONDecodeError:
-                        logger.info(f"Response Body (non-JSON): {response.text}")
+                        logger.debug(f"Response Body (non-JSON): {response.text}")
                         response_data = None
 
                     if response.status_code == 200:
@@ -640,8 +640,15 @@ class IIFLAPIService:
         return await self._make_api_request("POST", "/preordermargin", order_data)
     
     async def calculate_span_exposure(self, instruments: List[Dict]) -> Optional[Dict]:
-        """Calculate SPAN and exposure margins"""
-        return await self._make_api_request("POST", "/spanexposure", {"instruments": instruments})
+        """Calculate SPAN and exposure margins.
+
+        The provider expects a raw JSON array with one or more instrument legs, e.g.:
+        [
+            {"instrumentId": "35089", "exchange": "NSEFO", "transactionType": "BUY", "quantity": 25},
+            {"instrumentId": "35005", "exchange": "NSEFO", "transactionType": "SELL", "quantity": 25}
+        ]
+        """
+        return await self._make_api_request("POST", "/spanexposure", instruments)
     
     # Portfolio
     async def get_holdings(self) -> Optional[Dict]:
@@ -799,20 +806,26 @@ class IIFLAPIService:
         # If none succeeded, return the last response for visibility
         return last_response
     
-    async def get_market_quotes(self, instruments: List[str]) -> Optional[Dict]:
-        """Get real-time market quotes"""
-        data = {"instruments": instruments}
-        return await self._make_api_request("POST", "/marketdata/marketquotes", data)
+    async def get_market_quotes(self, instruments: List[Dict]) -> Optional[Dict]:
+        """Get real-time market quotes.
+
+        Expects a list of objects with at least {"exchange": "NSEEQ", "instrumentId": "1594"}.
+        """
+        return await self._make_api_request("POST", "/marketdata/marketquotes", instruments)
     
-    async def get_market_depth(self, instrument: str) -> Optional[Dict]:
-        """Get market depth for an instrument"""
-        data = {"instrument": instrument}
-        return await self._make_api_request("POST", "/marketdata/marketdepth", data)
+    async def get_market_depth(self, instrument: Dict) -> Optional[Dict]:
+        """Get market depth for an instrument.
+
+        Expects an object: {"exchange": "NSEEQ", "instrumentId": "1594"}.
+        """
+        return await self._make_api_request("POST", "/marketdata/marketdepth", instrument)
     
-    async def get_open_interest(self, instruments: List[str]) -> Optional[Dict]:
-        """Get open interest data"""
-        data = {"instruments": instruments}
-        return await self._make_api_request("POST", "/marketdata/openinterest", data)
+    async def get_open_interest(self, instrument: Dict) -> Optional[Dict]:
+        """Get open interest data for a single instrument.
+
+        Expects an object: {"exchange": "NSEFO", "instrumentId": "35005"}.
+        """
+        return await self._make_api_request("POST", "/marketdata/openinterest", instrument)
     
     # Utility methods
     def format_order_data(self, symbol: str, transaction_type: str, quantity: int, 
@@ -849,12 +862,13 @@ class IIFLAPIService:
         return order_data
     
     async def is_market_open(self) -> bool:
-        """Check if market is currently open"""
+        """Check if market is currently open by attempting a simple quote fetch."""
         try:
-            # Simple check - try to get market quotes for NIFTY
-            result = await self.get_market_quotes(["NIFTY"])
-            return result is not None
-        except:
+            # Use a well-known NSEEQ instrument (e.g., INFY: 1594) for a lightweight check
+            payload = [{"exchange": "NSEEQ", "instrumentId": "1594"}]
+            result = await self.get_market_quotes(payload)
+            return bool(isinstance(result, dict) and result.get("status") == "Ok")
+        except Exception:
             return False
     
     async def force_auth_code_refresh(self) -> bool:

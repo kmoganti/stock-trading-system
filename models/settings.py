@@ -1,3 +1,9 @@
+try:
+    # Back-compat shim for tests expecting models.settings.Settings
+    from config.settings import Settings  # type: ignore
+except Exception:  # pragma: no cover
+    Settings = object  # minimal fallback
+
 from sqlalchemy import Column, String, Text, DateTime
 from sqlalchemy.sql import func
 from .database import Base

@@ -208,28 +208,35 @@ class DataFetcher:
             if isinstance(cached, dict):
                 return cached
 
-        url = "https://api.iiflcapital.com/v1/contractfiles/NSEEQ.json"
+        base_urls = [
+            "https://api.iiflcapital.com/v1/contractfiles/NSEEQ.json",
+            "https://api.iiflcapital.com/v1/contractfiles/NSEFO.json",
+        ]
         id_map: Dict[str, Any] = {}
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                data = resp.json()
-                contracts: List[Dict[str, Any]]
-                if isinstance(data, dict) and isinstance(data.get("result"), list):
-                    contracts = data.get("result", [])  # type: ignore
-                elif isinstance(data, list):
-                    contracts = data
-                else:
-                    contracts = []
-
-                for c in contracts:
+                for url in base_urls:
                     try:
-                        tsym = c.get("tradingSymbol")
-                        exch = c.get("exchange")
-                        inst = c.get("instrumentId")
-                        if tsym and inst and (exch == "NSEEQ" or exch == "NSE"):
-                            id_map[str(tsym).upper()] = str(inst)
+                        resp = await client.get(url)
+                        resp.raise_for_status()
+                        data = resp.json()
+                        contracts: List[Dict[str, Any]]
+                        if isinstance(data, dict) and isinstance(data.get("result"), list):
+                            contracts = data.get("result", [])  # type: ignore
+                        elif isinstance(data, list):
+                            contracts = data
+                        else:
+                            contracts = []
+
+                        for c in contracts:
+                            try:
+                                tsym = c.get("tradingSymbol")
+                                exch = c.get("exchange") or ("NSEFO" if "NSEFO" in url else "NSEEQ")
+                                inst = c.get("instrumentId")
+                                if tsym and inst and exch in {"NSEEQ", "NSEFO", "NSE"}:
+                                    id_map[str(tsym).upper()] = str(inst)
+                            except Exception:
+                                continue
                     except Exception:
                         continue
 
@@ -415,17 +422,23 @@ class DataFetcher:
             if self._is_cache_valid(cache_key, 5):  # 5 sec cache
                 return self.cache[cache_key]
             
-            result = await self.iifl.get_market_quotes([symbol])
-            
-            if result and result.get("status") == "Ok":
-                quotes = result.get("resultData", [])
-                if quotes:
-                    price = quotes[0].get("ltp")  # Last Traded Price
-                    if price:
+            inst_id = await self._resolve_instrument_id(symbol)
+            if not inst_id:
+                logger.warning(f"Could not resolve instrumentId for symbol {symbol}")
+                return None
+
+            payload = [{"exchange": "NSEEQ", "instrumentId": str(inst_id)}]
+            resp = await self.iifl.get_market_quotes(payload)
+
+            if isinstance(resp, dict) and resp.get("status") == "Ok":
+                quotes = resp.get("result") or resp.get("resultData") or []
+                if isinstance(quotes, list) and quotes:
+                    price = (quotes[0] or {}).get("ltp")
+                    if price is not None:
                         self._set_cache(cache_key, float(price), 5)
                         return float(price)
-            elif result:
-                logger.warning(f"Failed to fetch live price for {symbol}: {result.get('emsg', 'Unknown API error')}")
+            elif isinstance(resp, dict):
+                logger.warning(f"Failed to fetch live price for {symbol}: {resp.get('message') or resp.get('emsg', 'Unknown API error')}")
             
             return None
             
@@ -436,21 +449,44 @@ class DataFetcher:
     async def get_multiple_prices(self, symbols: List[str]) -> Dict[str, float]:
         """Get live prices for multiple symbols"""
         try:
-            result = await self.iifl.get_market_quotes(symbols)
-            prices = {}
-            
-            if result and result.get("status") == "Ok":
-                quotes = result.get("resultData", [])
-                for quote in quotes:
-                    symbol = quote.get("symbol")
-                    ltp = quote.get("ltp")
-                    if symbol and ltp:
-                        prices[symbol] = float(ltp)
-                        # Cache individual prices
-                        self._set_cache(f"price_{symbol}", float(ltp), 5)
-            elif result:
-                logger.warning(f"Failed to fetch multiple prices: {result.get('emsg', 'Unknown API error')}")
-            
+            prices: Dict[str, float] = {}
+
+            # Resolve all symbols to instrument payloads (equities default to NSEEQ)
+            payload: List[Dict[str, str]] = []
+            symbol_to_payload: Dict[str, Dict[str, str]] = {}
+            for sym in symbols:
+                inst_id = await self._resolve_instrument_id(sym)
+                if inst_id:
+                    p = {"exchange": "NSEEQ", "instrumentId": str(inst_id)}
+                    payload.append(p)
+                    symbol_to_payload[sym.upper()] = p
+                else:
+                    logger.warning(f"Could not resolve instrumentId for {sym}")
+
+            if not payload:
+                return prices
+
+            resp = await self.iifl.get_market_quotes(payload)
+            if isinstance(resp, dict) and resp.get("status") == "Ok":
+                quotes = resp.get("result") or resp.get("resultData") or []
+                if isinstance(quotes, list):
+                    for quote in quotes:
+                        try:
+                            ltp = quote.get("ltp")
+                            instrument_id = str(quote.get("instrumentId")) if quote.get("instrumentId") is not None else None
+                            if ltp is None or instrument_id is None:
+                                continue
+                            # Map back to original symbol by matching instrumentId
+                            for sym, p in symbol_to_payload.items():
+                                if p.get("instrumentId") == instrument_id:
+                                    prices[sym] = float(ltp)
+                                    self._set_cache(f"price_{sym}", float(ltp), 5)
+                                    break
+                        except Exception:
+                            continue
+            elif isinstance(resp, dict):
+                logger.warning(f"Failed to fetch multiple prices: {resp.get('message') or resp.get('emsg', 'Unknown API error')}")
+
             return prices
             
         except Exception as e:
@@ -465,21 +501,73 @@ class DataFetcher:
             if self._is_cache_valid(cache_key, 2):  # 2 sec cache
                 return self.cache[cache_key]
             
-            result = await self.iifl.get_market_depth(symbol)
-            
-            if result and result.get("status") == "Ok":
-                depth_data = result.get("resultData")
-                if depth_data:
-                    self._set_cache(cache_key, depth_data, 2)
-                    return depth_data
-            elif result:
-                logger.warning(f"Failed to fetch market depth for {symbol}: {result.get('emsg', 'Unknown API error')}")
+            inst_id = await self._resolve_instrument_id(symbol)
+            if not inst_id:
+                logger.warning(f"Could not resolve instrumentId for symbol {symbol}")
+                return None
+
+            payload = {"exchange": "NSEEQ", "instrumentId": str(inst_id)}
+            resp = await self.iifl.get_market_depth(payload)
+
+            if isinstance(resp, dict) and resp.get("status") == "Ok":
+                depth_obj = resp.get("result") or resp.get("resultData")
+                if isinstance(depth_obj, dict):
+                    # Cache and return normalized object
+                    self._set_cache(cache_key, depth_obj, 2)
+                    return depth_obj
+            elif isinstance(resp, dict):
+                logger.warning(f"Failed to fetch market depth for {symbol}: {resp.get('message') or resp.get('emsg', 'Unknown API error')}")
             
             return None
             
         except Exception as e:
             logger.error(f"Error fetching market depth for {symbol}: {str(e)}")
             return None
+
+    async def get_bulk_quotes(self, symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+        """Fetch bulk market quotes (ltp, tradedVolume, best bid/ask) for a list of symbols.
+
+        Returns mapping: UPPER_SYMBOL -> { 'ltp': float, 'tradedVolume': int, 'instrumentId': str }
+        """
+        results: Dict[str, Dict[str, Any]] = {}
+        try:
+            if not symbols:
+                return results
+            payload: List[Dict[str, str]] = []
+            sym_to_inst: Dict[str, str] = {}
+            for sym in symbols:
+                inst_id = await self._resolve_instrument_id(sym)
+                if not inst_id:
+                    continue
+                payload.append({"exchange": "NSEEQ", "instrumentId": str(inst_id)})
+                sym_to_inst[str(inst_id)] = sym.upper()
+
+            if not payload:
+                return results
+
+            resp = await self.iifl.get_market_quotes(payload)
+            if isinstance(resp, dict) and resp.get("status") == "Ok":
+                quotes = resp.get("result") or resp.get("resultData") or []
+                if isinstance(quotes, list):
+                    for q in quotes:
+                        try:
+                            inst = str(q.get("instrumentId")) if q.get("instrumentId") is not None else None
+                            if not inst or inst not in sym_to_inst:
+                                continue
+                            symbol_key = sym_to_inst[inst]
+                            ltp = q.get("ltp")
+                            vol = q.get("tradedVolume") or q.get("volume") or 0
+                            results[symbol_key] = {
+                                "ltp": float(ltp) if ltp is not None else None,
+                                "tradedVolume": int(vol) if vol is not None else 0,
+                                "instrumentId": inst,
+                            }
+                        except Exception:
+                            continue
+            return results
+        except Exception as e:
+            logger.error(f"Error fetching bulk quotes: {str(e)}")
+            return results
     
 
     def _process_holdings_data(self, holdings_raw: List[Dict]) -> List[Dict]:
@@ -745,12 +833,16 @@ class DataFetcher:
             if not depth:
                 return {"volume": 0, "bid_ask_spread": 0, "liquidity_score": 0}
             
-            # Calculate basic liquidity metrics
-            bid_qty = sum([level.get("quantity", 0) for level in depth.get("bids", [])])
-            ask_qty = sum([level.get("quantity", 0) for level in depth.get("asks", [])])
-            
-            best_bid = depth.get("bids", [{}])[0].get("price", 0) if depth.get("bids") else 0
-            best_ask = depth.get("asks", [{}])[0].get("price", 0) if depth.get("asks") else 0
+            # Normalized access to nested marketDepth structure
+            md = depth.get("marketDepth") if isinstance(depth, dict) else None
+            bids = (md or {}).get("bids", []) if isinstance(md, dict) else []
+            asks = (md or {}).get("asks", []) if isinstance(md, dict) else []
+
+            bid_qty = sum([level.get("quantity", 0) for level in bids])
+            ask_qty = sum([level.get("quantity", 0) for level in asks])
+
+            best_bid = bids[0].get("price", 0) if bids else 0
+            best_ask = asks[0].get("price", 0) if asks else 0
             
             spread = (best_ask - best_bid) / best_bid * 100 if best_bid > 0 else 0
             total_volume = bid_qty + ask_qty
