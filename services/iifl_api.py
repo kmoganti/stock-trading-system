@@ -698,7 +698,7 @@ class IIFLAPIService:
 
         if str(symbol).isdigit():
             # Provider accepts InstrumentId (camel-case I) based on observed contract file & logs
-            payload["InstrumentId"] = str(symbol)
+            payload["instrumentId"] = str(symbol)
         else:
             payload["symbol"] = str(symbol).upper()
 
