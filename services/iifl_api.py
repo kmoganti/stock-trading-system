@@ -662,21 +662,17 @@ class IIFLAPIService:
     
     # Market Data
     async def get_historical_data(self, symbol: str, interval: str, from_date: str, to_date: str) -> Optional[Dict]:
-        """Get historical OHLCV data with robust payload variants."""
+        """Get historical OHLCV data with a single request (no fallbacks)."""
 
         # --- Date and Interval Preparation ---
         try:
             from_dt_parsed = datetime.strptime(from_date, "%Y-%m-%d")
             to_dt_parsed = datetime.strptime(to_date, "%Y-%m-%d")
-            dd_mon_yyyy_from_title = from_dt_parsed.strftime("%d-%b-%Y")
-            dd_mon_yyyy_to_title = to_dt_parsed.strftime("%d-%b-%Y")
+            dd_mon_yyyy_from = from_dt_parsed.strftime("%d-%b-%Y").lower()
+            dd_mon_yyyy_to = to_dt_parsed.strftime("%d-%b-%Y").lower()
         except Exception:
-            # If parsing fails, assume provided strings are already acceptable
-            dd_mon_yyyy_from_title = from_date
-            dd_mon_yyyy_to_title = to_date
-
-        dd_mon_yyyy_from_lower = dd_mon_yyyy_from_title.lower() if isinstance(dd_mon_yyyy_from_title, str) else dd_mon_yyyy_from_title
-        dd_mon_yyyy_to_lower = dd_mon_yyyy_to_title.lower() if isinstance(dd_mon_yyyy_to_title, str) else dd_mon_yyyy_to_title
+            dd_mon_yyyy_from = from_date
+            dd_mon_yyyy_to = to_date
 
         def _normalize_interval_value(user_interval: str) -> str:
             s = str(user_interval).strip().lower()
@@ -692,71 +688,27 @@ class IIFLAPIService:
 
         interval_norm = _normalize_interval_value(interval)
 
-        # Prepare small set of variants to maximize compatibility while minimizing calls
-        interval_variants = [interval_norm]
-        if interval_norm == "1 day":
-            interval_variants.append("1D")
+        # --- Payload Preparation ---
+        payload = {
+            "exchange": "NSEEQ",
+            "interval": interval_norm,
+            "fromDate": dd_mon_yyyy_from,
+            "toDate": dd_mon_yyyy_to,
+        }
 
-        date_variants = [
-            (dd_mon_yyyy_from_lower, dd_mon_yyyy_to_lower),
-            (dd_mon_yyyy_from_title, dd_mon_yyyy_to_title),
-        ]
-
-        exchange_variants = ["NSEEQ", "NSE"]
-
-        # Symbol vs instrument key variants
-        symbol_is_numeric = str(symbol).isdigit()
-        key_variants: list[dict] = []
-        if symbol_is_numeric:
-            key_variants = [
-                {"instrumentId": str(symbol)},
-                {"InstrumentId": str(symbol)},
-            ]
+        if str(symbol).isdigit():
+            # Provider accepts InstrumentId (camel-case I) based on observed contract file & logs
+            payload["InstrumentId"] = str(symbol)
         else:
-            key_variants = [{"symbol": str(symbol).upper()}]
+            payload["symbol"] = str(symbol).upper()
 
-        attempt_no = 0
-        last_response: Optional[Dict] = None
+        trading_logger.log_system_event("iifl_hist_attempt", {
+            "attempt": 1,
+            "variant": "single_request",
+            "payload_keys": list(payload.keys())
+        })
 
-        for key_variant in key_variants:
-            for interval_value in interval_variants:
-                for exchange_value in exchange_variants:
-                    for from_v, to_v in date_variants:
-                        attempt_no += 1
-                        payload = {
-                            "exchange": exchange_value,
-                            "interval": interval_value,
-                            "fromDate": from_v,
-                            "toDate": to_v,
-                            **key_variant,
-                        }
-
-                        trading_logger.log_system_event("iifl_hist_attempt", {
-                            "attempt": attempt_no,
-                            "variant": "payload_variant",
-                            "payload_keys": list(payload.keys())
-                        })
-
-                        response = await self._make_api_request("POST", "/marketdata/historicaldata", payload)
-                        last_response = response if isinstance(response, dict) else None
-
-                        # Success criteria: HTTP 200 is handled inside _make_api_request. Here check provider status and data presence
-                        if isinstance(last_response, dict):
-                            status_field = (last_response.get("status") or last_response.get("stat") or "").lower()
-                            # consider successful if provider status is Ok and there is some result array (even empty can happen on holidays)
-                            if status_field == "ok":
-                                # If there is non-empty data, return immediately
-                                for key in ["result", "data", "resultData"]:
-                                    value = last_response.get(key)
-                                    if isinstance(value, list) and len(value) > 0:
-                                        return last_response
-                                # If Ok but empty, keep trying the next variant briefly; if all fail, return the Ok response
-                                continue
-
-        # If any Ok (even empty) response was seen last, return it; else return last_response
-        if isinstance(last_response, dict):
-            return last_response
-        return None
+        return await self._make_api_request("POST", "/marketdata/historicaldata", payload)
     
     async def get_market_quotes(self, instruments: List[str]) -> Optional[Dict]:
         """Get real-time market quotes"""
