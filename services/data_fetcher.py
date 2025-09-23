@@ -326,7 +326,13 @@ class DataFetcher:
                                  (result.get("status", "").lower() == "ok" or result.get("stat", "").lower() == "ok")
 
         if is_successful_response and result:
-            standardized_data = self._standardize_historical_payload(result.get("result", []))
+            # Some responses may use different keys for the candles array
+            raw_list = None
+            for key in ["result", "data", "resultData"]:
+                if isinstance(result.get(key), list):
+                    raw_list = result.get(key)
+                    break
+            standardized_data = self._standardize_historical_payload(raw_list or [])
             if standardized_data:
                 return standardized_data
         
@@ -343,7 +349,12 @@ class DataFetcher:
                                       (result2.get("status", "").lower() == "ok" or result2.get("stat", "").lower() == "ok")
 
             if is_successful_response2 and result2:
-                standardized_data = self._standardize_historical_payload(result2.get("result", []))
+                raw_list2 = None
+                for key in ["result", "data", "resultData"]:
+                    if isinstance(result2.get(key), list):
+                        raw_list2 = result2.get(key)
+                        break
+                standardized_data = self._standardize_historical_payload(raw_list2 or [])
                 if standardized_data:
                     return standardized_data
             elif result2:
