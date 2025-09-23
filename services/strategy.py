@@ -61,6 +61,11 @@ class StrategyService:
         self.settings = get_settings()
         self.watchlist_service = WatchlistService(db) if db is not None else None
         self._watchlist_by_category: Dict[Optional[str], List[str]] = {}
+        self._strategy_map = {
+            "ema_crossover": self._ema_crossover_strategy,
+            "bollinger_bands": self._bollinger_bands_strategy,
+            "momentum": self._momentum_strategy,
+        }
     
     def calculate_indicators(self, df) -> Dict:
         """Calculate technical indicators for the dataframe"""
@@ -104,7 +109,7 @@ class StrategyService:
             df['atr'] = ta.volatility.AverageTrueRange(df['high'], df['low'], df['close'], window=14).average_true_range()
             
             # Volume indicators
-            df['volume_sma'] = ta.volume.VolumeSMAIndicator(df['close'], df['volume'], window=20).volume_sma()
+            df['volume_sma'] = ta.trend.SMAIndicator(df['volume'], window=20).sma_indicator()
             df['volume_ratio'] = df['volume'] / df['volume_sma']
             
             # Support and Resistance levels
@@ -212,8 +217,8 @@ class StrategyService:
             
             # Check for bullish crossover (9 EMA crosses above 21 EMA)
             is_bullish_crossover = previous['ema_9'] <= previous['ema_21'] and current['ema_9'] > current['ema_21']
-            is_uptrend = current['close'] > current['ema_50']  # Trend filter
-            has_volume = current['volume_ratio'] > 1.0  # Volume confirmation
+            is_uptrend = current['close'] > current['ema_50']
+            has_volume = current['volume_ratio'] > 0.9  # Relaxed volume confirmation
             
             if is_bullish_crossover and is_uptrend and has_volume and current['rsi'] < 70:
                 # Volatility-adjusted stop-loss and take-profit using ATR
@@ -277,8 +282,8 @@ class StrategyService:
             
             # Buy when price touches lower band and RSI is oversold
             if (current['close'] <= current['bb_lower'] and 
-                current['rsi'] < 30 and
-                current['volume_ratio'] > 1.2):  # High volume
+                current['rsi'] < 30 and 
+                current['volume_ratio'] > 1.1):  # Relaxed high volume confirmation
                 
                 return TradingSignal(
                     symbol=symbol,
@@ -298,8 +303,8 @@ class StrategyService:
             
             # Sell when price touches upper band and RSI is overbought
             elif (current['close'] >= current['bb_upper'] and 
-                  current['rsi'] > 70 and
-                  current['volume_ratio'] > 1.2):
+                  current['rsi'] > 70 and 
+                  current['volume_ratio'] > 1.1):
                 
                 return TradingSignal(
                     symbol=symbol,
@@ -332,12 +337,12 @@ class StrategyService:
             current = df.iloc[-1]
             previous = df.iloc[-2]
             
-            has_volume = current['volume_ratio'] > 1.1
+            has_volume = current['volume_ratio'] > 0.95 # Relaxed volume confirmation
             
             # Bullish momentum: MACD crosses above signal line with strong momentum
             if (previous['macd'] <= previous['macd_signal'] and
                 current['macd'] > current['macd_signal'] and
-                current['price_momentum'] > 0.02 and  # 2% momentum
+                current['price_momentum'] > 0.015 and  # Relaxed to 1.5% momentum
                 has_volume and current['rsi'] > 40 and current['rsi'] < 70):
                 
                 return TradingSignal(
@@ -360,7 +365,7 @@ class StrategyService:
             # Bearish momentum: MACD crosses below signal line with negative momentum
             elif (previous['macd'] >= previous['macd_signal'] and
                   current['macd'] < current['macd_signal'] and
-                  current['price_momentum'] < -0.02 and  # -2% momentum
+                  current['price_momentum'] < -0.015 and  # Relaxed to -1.5% momentum
                   has_volume and current['rsi'] > 30 and current['rsi'] < 60):
                 
                 return TradingSignal(
@@ -441,7 +446,9 @@ class StrategyService:
                 self._watchlist_by_category[category] = []
         return self._watchlist_by_category[category]
 
-    async def update_watchlist(self, symbols: List[str], category: Optional[str] = None) -> None:
+    async def update_watchlist(
+        self, symbols: List[str], category: Optional[str] = None
+    ) -> None:
         """Update the watchlist with new symbols"""
         if self.watchlist_service is not None:
             await self.watchlist_service.add_symbols(symbols, category=category)
@@ -454,7 +461,9 @@ class StrategyService:
             if category in self._watchlist_by_category:
                 self._watchlist_by_category[category] = [s for s in self._watchlist_by_category[category] if s not in [sym.upper() for sym in symbols]]
 
-    async def generate_signals(self, symbol: str, category: str = "short_term") -> List[TradingSignal]:
+    async def generate_signals(
+        self, symbol: str, category: str = "short_term", strategy_name: Optional[str] = None
+    ) -> List[TradingSignal]:
         """Generate trading signals for a symbol"""
         try:
             # Determine data fetching parameters based on trading category
@@ -493,20 +502,17 @@ class StrategyService:
             
             signals = []
             
-            if HAS_PANDAS:
-                # Advanced strategies with pandas
-                ema_signal = self._ema_crossover_strategy(indicators, symbol)
-                if ema_signal:
-                    signals.append(ema_signal)
-                
-                bb_signal = self._bollinger_bands_strategy(indicators, symbol)
-                if bb_signal:
-                    signals.append(bb_signal)
-                
-                momentum_signal = self._momentum_strategy(indicators, symbol)
-                if momentum_signal:
-                    signals.append(momentum_signal)
-            else:
+            if HAS_PANDAS and self._strategy_map:
+                strategies_to_run = (
+                    {strategy_name: self._strategy_map[strategy_name]}
+                    if strategy_name and strategy_name in self._strategy_map
+                    else self._strategy_map
+                )
+                for name, func in strategies_to_run.items():
+                    signal = func(indicators, symbol)
+                    if signal:
+                        signals.append(signal)
+            elif not HAS_PANDAS:
                 # Basic strategy without pandas
                 basic_signal = self._basic_trend_strategy(indicators, symbol)
                 if basic_signal:

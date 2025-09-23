@@ -241,6 +241,7 @@ async def test_signal_generation(symbols_to_test: list = None):
                     
                     last_record = hist_data_df.iloc[-1]
                     print(f"  - Latest Close: {last_record['close']:.2f} on {last_record.name.strftime('%Y-%m-%d')}")
+
                     print(f"  - Latest Volume: {last_record['volume']:,.0f}")
 
                     # Check against system filters
@@ -249,8 +250,11 @@ async def test_signal_generation(symbols_to_test: list = None):
                     
                     # 2. Generate signals for this symbol
                     print("  Running signal generation logic...")
+
                     signals = await strategy_service.generate_signals(symbol)
-                    
+
+
+
                     if signals:
                         total_signals += len(signals)
                         print(f"  [SUCCESS] Found {len(signals)} signal(s) for {symbol}!")
@@ -262,10 +266,12 @@ async def test_signal_generation(symbols_to_test: list = None):
                             print(f"       Entry: Rs.{signal.entry_price:.2f}, SL: Rs.{signal.stop_loss:.2f}, TGT: Rs.{signal.target_price:.2f}")
                             print(f"       Confidence: {signal.confidence:.1%}")
                             
+
                     else:
                         print(f"  [INFO] No signals generated for {symbol}. Conditions not met.")
                         
                 except Exception as e:
+
                     print(f"  [ERROR] An exception occurred while analyzing {symbol}: {str(e)}")
             
             print("\n" + "=" * 50)
@@ -285,4 +291,8 @@ if __name__ == "__main__":
         help='A list of specific stock symbols to test (e.g., RELIANCE TCS INFY). Overrides watchlist.'
     )
     args = parser.parse_args()
-    asyncio.run(test_signal_generation(symbols_to_test=args.symbols))
+    try:
+        asyncio.run(test_signal_generation(symbols_to_test=args.symbols))
+    except KeyboardInterrupt:
+        print("\n[INFO] Script interrupted by user. Exiting.")
+        sys.exit(0)

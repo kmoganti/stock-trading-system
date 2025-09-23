@@ -641,47 +641,13 @@ class DataFetcher:
             if self._margin_cache is not None:
                 return self._margin_cache
 
-            # Primary: call provider /limits endpoint
-            try:
-                limits_resp = await self.iifl.get_limits()
-                if isinstance(limits_resp, dict):
-                    # Accept either wrapped or flat payloads
-                    payload = None
-                    if limits_resp.get("status") == "Ok" and isinstance(limits_resp.get("result"), (list, dict)):
-                        # If it's a list, take first item; else dict
-                        result_obj = limits_resp.get("result")
-                        if isinstance(result_obj, list) and result_obj:
-                            payload = result_obj[0]
-                        elif isinstance(result_obj, dict):
-                            payload = result_obj
-                    else:
-                        payload = limits_resp
-
-                    if isinstance(payload, dict):
-                        # Normalize to stable keys used by UI
-                        available = payload.get("availableMargin") or payload.get("availableCash") or payload.get("cashAvailable") or payload.get("totalCashAvailable") or payload.get("netAvailableMargin") or 0.0
-                        used = payload.get("usedMargin") or payload.get("marginUsed") or payload.get("utilizedMargin") or 0.0
-                        fund_short = payload.get("fundShort") or payload.get("fundshort") or payload.get("shortfall") or 0.0
-
-                        normalized = {
-                            "availableMargin": float(available or 0.0),
-                            "usedMargin": float(used or 0.0),
-                            "fundShort": float(fund_short or 0.0),
-                            # Maintain shape parity with fallback where callers might read these keys
-                            "preOrderMargin": 0.0,
-                            "postOrderMargin": 0.0,
-                        }
-                        self._margin_cache = normalized
-                        return normalized
-            except Exception as e:
-                logger.warning(f"/limits call failed, will try fallback: {str(e)}")
-
-            # Fallback: derive via pre-order margin endpoint with minimal dummy order
+            # Derive available margin via pre-order margin endpoint with minimal dummy order
             try:
                 fallback = await self.calculate_required_margin(
                     symbol="1594", quantity=1, transaction_type="BUY", price=None, product="NORMAL", exchange="NSEEQ"
                 )
                 if fallback:
+                    # Normalize to expected keys so UI can read availableMargin/usedMargin
                     derived = {
                         "availableMargin": fallback.get("total_cash_available", 0.0),
                         "usedMargin": fallback.get("current_order_margin", 0.0),
@@ -693,7 +659,7 @@ class DataFetcher:
                     return derived
             except Exception as e:
                 logger.warning(f"Fallback preordermargin failed: {str(e)}")
-
+            
             return None
             
         except Exception as e:
@@ -702,14 +668,18 @@ class DataFetcher:
     
     async def calculate_required_margin(self, symbol: str, quantity: int, 
                                       transaction_type: str, price: Optional[float] = None,
-                                      product: str = "NORMAL", exchange: str = "NSEEQ") -> Optional[Dict]:
+                                      product: str = "NORMAL", exchange: str = "NSEEQ",
+                                      order_type: Optional[str] = None) -> Optional[Dict]:
         """Calculate required margin for a trade using IIFL preordermargin API"""
         try:
+            # Use the provided order_type if available, otherwise infer from the price
+            final_order_type = order_type.upper() if order_type else ("LIMIT" if price else "MARKET")
+
             order_data = self.iifl.format_order_data(
                 symbol=symbol,
                 transaction_type=transaction_type,
                 quantity=quantity,
-                order_type="LIMIT" if price else "MARKET",
+                order_type=final_order_type,
                 price=price,
                 product=product,
                 exchange=exchange

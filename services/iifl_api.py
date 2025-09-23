@@ -661,6 +661,8 @@ class IIFLAPIService:
     async def get_historical_data(self, symbol: str, interval: str, from_date: str, to_date: str) -> Optional[Dict]:
         """Get historical OHLCV data"""
         # Preserve numeric instrument IDs; for string symbols normalize case and strip known suffixes
+
+
         normalized_symbol = symbol
         try:
             int(str(symbol).strip())
@@ -670,6 +672,7 @@ class IIFLAPIService:
             if "-" in normalized_symbol:
                 base_part = normalized_symbol.split("-", 1)[0]
             else:
+
                 base_part = normalized_symbol
 
         def _has_payload(resp: Optional[Dict]) -> bool:
@@ -687,6 +690,7 @@ class IIFLAPIService:
             # Top-level Ok without data is not a payload
             return False
 
+
         # Build a focused list of attempts to maximize compatibility.
         attempts: list[dict] = []
 
@@ -694,8 +698,8 @@ class IIFLAPIService:
         try:
             from_dt_parsed = datetime.strptime(from_date, "%Y-%m-%d")
             to_dt_parsed = datetime.strptime(to_date, "%Y-%m-%d")
-            dd_mon_yyyy_from = from_dt_parsed.strftime("%d-%b-%Y").lower()
-            dd_mon_yyyy_to = to_dt_parsed.strftime("%d-%b-%Y").lower()
+            dd_mon_yyyy_from = from_dt_parsed.strftime("%d-%b-%Y")
+            dd_mon_yyyy_to = to_dt_parsed.strftime("%d-%b-%Y")
         except Exception:
             # If input is not YYYY-MM-DD, assume it might be the target format already
             dd_mon_yyyy_from = from_date
@@ -734,7 +738,7 @@ class IIFLAPIService:
         # Attempt 1: The most reliable format found in other scripts (instrumentId, dd-Mon-YYYY)
         if is_numeric_symbol:
             attempts.append({
-                "payload": {"instrumentId": str(normalized_symbol), "exchange": "NSEEQ", "interval": interval_norm, "fromDate": dd_mon_yyyy_from, "toDate": dd_mon_yyyy_to},
+                "payload": {"InstrumentId": str(normalized_symbol), "exchange": "NSEEQ", "interval": interval_norm, "fromDate": dd_mon_yyyy_from, "toDate": dd_mon_yyyy_to},
                 "desc": "instrumentId_exchange_ddMonYYYY"
             })
 
@@ -749,14 +753,14 @@ class IIFLAPIService:
         # Attempt 3: Basic symbol with YYYY-MM-DD date format
         for sym in symbol_variants:
             attempts.append({
-                "payload": {"symbol": sym, "interval": interval, "fromDate": from_date, "toDate": to_date},
+                "payload": {"symbol": sym, "interval": interval_norm, "fromDate": from_date, "toDate": to_date},
                 "desc": "symbol_raw_interval_and_date"
             })
 
         # Attempt 4: Basic instrumentId with YYYY-MM-DD date format
         if is_numeric_symbol:
             attempts.append({
-                "payload": {"instrumentId": str(normalized_symbol), "interval": interval, "fromDate": from_date, "toDate": to_date},
+                "payload": {"InstrumentId": str(normalized_symbol), "interval": interval_norm, "fromDate": from_date, "toDate": to_date},
                 "desc": "instrumentId_raw_interval_and_date"
             })
 
@@ -770,12 +774,11 @@ class IIFLAPIService:
                 unique_attempts.append(a)
 
         # Cap total attempts to avoid excessive API usage
-        try:
-            max_attempts = int(os.getenv("IIFL_HIST_MAX_ATTEMPTS", "10") or "10")
-        except Exception:
-            max_attempts = 10
-        if len(unique_attempts) > max_attempts:
-            unique_attempts = unique_attempts[:max_attempts]
+
+        if len(unique_attempts) > 2:
+            unique_attempts = unique_attempts[:2]
+
+
 
         # Execute attempts sequentially until one yields data
         last_response: Optional[Dict] = None
@@ -801,7 +804,11 @@ class IIFLAPIService:
     
     async def get_market_quotes(self, instruments: List[str]) -> Optional[Dict]:
         """Get real-time market quotes"""
-        data = {"instruments": instruments}
+        # Ensure all instruments are strings
+        instrument_strs = [str(instr) for instr in instruments]
+        data = {"instruments": instrument_strs}
+        
+        # Call API and return result
         return await self._make_api_request("POST", "/marketdata/marketquotes", data)
     
     async def get_market_depth(self, instrument: str) -> Optional[Dict]:
