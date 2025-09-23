@@ -99,8 +99,8 @@ class TradingLogger:
         
         self.risk_logger.warning(f"RISK: {json.dumps(risk_data)}")
     
-    def log_api_call(self, endpoint: str, method: str, status_code: int, 
-                     response_time: float, error: str = None):
+    def log_api_call(self, endpoint: str, method: str, status_code: int,
+                     response_time: float, error: str = None, request_body: Any = None):
         """Log API calls"""
         api_data = {
             "timestamp": datetime.now().isoformat(),
@@ -108,7 +108,8 @@ class TradingLogger:
             "method": method,
             "status_code": status_code,
             "response_time_ms": response_time * 1000,
-            "error": error
+            "error": error,
+            "request_body": request_body
         }
         
         level = logging.ERROR if error else logging.INFO

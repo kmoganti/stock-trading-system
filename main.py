@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from contextlib import asynccontextmanager
 import time
+import json
 
 from config.settings import get_settings
 from models.database import init_db, close_db
@@ -216,8 +217,22 @@ app.include_router(margin_router, prefix="/api/margin", tags=["margin"])
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start = time.perf_counter()
+    body = await request.body()
+
+    async def receive():
+        return {"type": "http.request", "body": body}
+
+    new_request = Request(request.scope, receive)
+
+    request_body_to_log = None
+    if body:
+        try:
+            request_body_to_log = json.loads(body)
+        except json.JSONDecodeError:
+            request_body_to_log = body.decode('utf-8', errors='ignore')
+
     try:
-        response = await call_next(request)
+        response = await call_next(new_request)
         duration = time.perf_counter() - start
         err: str = None
         if response.status_code >= 500:
@@ -227,7 +242,8 @@ async def log_requests(request: Request, call_next):
             method=request.method,
             status_code=response.status_code,
             response_time=duration,
-            error=err
+            error=err,
+            request_body=request_body_to_log
         )
         return response
     except Exception as e:
@@ -237,7 +253,8 @@ async def log_requests(request: Request, call_next):
             method=request.method,
             status_code=500,
             response_time=duration,
-            error=str(e)
+            error=str(e),
+            request_body=request_body_to_log
         )
         trading_logger.log_error("api", e, {"path": str(request.url.path), "method": request.method})
         raise

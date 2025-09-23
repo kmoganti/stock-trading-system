@@ -462,7 +462,8 @@ class IIFLAPIService:
                             method=method.upper(),
                             status_code=response.status_code,
                             response_time=response_time,
-                            error=None if response.status_code == 200 else f"HTTP {response.status_code}"
+                            error=None if response.status_code == 200 else f"HTTP {response.status_code}",
+                            request_body=request_body
                         )
 
                         # Log response details
@@ -518,7 +519,8 @@ class IIFLAPIService:
                         method=method.upper(),
                         status_code=response.status_code,
                         response_time=response_time,
-                        error=f"HTTP {response.status_code}: {response.text[:200]}"
+                        error=f"HTTP {response.status_code}: {response.text[:200]}",
+                        request_body=request_body
                     )
                     return None
 
@@ -531,7 +533,8 @@ class IIFLAPIService:
                     method=method.upper(),
                     status_code=0,
                     response_time=response_time,
-                    error=str(e)
+                    error=str(e),
+                    request_body=request_body
                 )
                 trading_logger.log_error("iifl_api", e, {
                     "url": url,
@@ -660,40 +663,7 @@ class IIFLAPIService:
     # Market Data
     async def get_historical_data(self, symbol: str, interval: str, from_date: str, to_date: str) -> Optional[Dict]:
         """Get historical OHLCV data"""
-        # Preserve numeric instrument IDs; for string symbols normalize case and strip known suffixes
-
-
-        normalized_symbol = symbol
-        try:
-            int(str(symbol).strip())
-        except ValueError:
-            normalized_symbol = str(symbol).upper().strip()
-            # Strip common suffixes like -EQ, -BE, -BZ, -SM, etc. for a base variant
-            if "-" in normalized_symbol:
-                base_part = normalized_symbol.split("-", 1)[0]
-            else:
-
-                base_part = normalized_symbol
-
-        def _has_payload(resp: Optional[Dict]) -> bool:
-            if not isinstance(resp, dict):
-                return False
-            # Prefer explicit data containers; verify they are not error lists
-            for key in ["result", "data", "resultData", "candles", "history"]:
-                value = resp.get(key)
-                if isinstance(value, list) and len(value) > 0:
-                    first_item = value[0] if len(value) > 0 else {}
-                    # Detect error objects like {"status": "EC802", ...}
-                    if isinstance(first_item, dict) and str(first_item.get("status", "")).startswith("EC"):
-                        return False
-                    return True
-            # Top-level Ok without data is not a payload
-            return False
-
-
-        # Build a focused list of attempts to maximize compatibility.
-        attempts: list[dict] = []
-
+        
         # --- Date and Interval Preparation ---
         try:
             from_dt_parsed = datetime.strptime(from_date, "%Y-%m-%d")
@@ -701,7 +671,6 @@ class IIFLAPIService:
             dd_mon_yyyy_from = from_dt_parsed.strftime("%d-%b-%Y")
             dd_mon_yyyy_to = to_dt_parsed.strftime("%d-%b-%Y")
         except Exception:
-            # If input is not YYYY-MM-DD, assume it might be the target format already
             dd_mon_yyyy_from = from_date
             dd_mon_yyyy_to = to_date
 
@@ -713,94 +682,31 @@ class IIFLAPIService:
                 "60m": "60 minutes", "1h": "60 minutes",
                 "1w": "weekly", "1mo": "monthly",
             }
-            # If it's already a valid format, return it
             if s in {"1 day", "1 minute", "5 minutes", "10 minutes", "15 minutes", "30 minutes", "60 minutes", "weekly", "monthly"}:
                 return s
             return mapping.get(s, "1 day")
 
         interval_norm = _normalize_interval_value(interval)
 
-        # --- Symbol Preparation ---
-        is_numeric_symbol = str(normalized_symbol).isdigit()
-        symbol_variants: list[str] = []
-        if is_numeric_symbol:
-            symbol_variants.append(str(normalized_symbol))
+        # --- Payload Preparation ---
+        payload = {
+            "exchange": "NSEEQ",
+            "interval": interval_norm,
+            "fromDate": dd_mon_yyyy_from,
+        }
+
+        if str(symbol).isdigit():
+            payload["InstrumentId"] = str(symbol)
         else:
-            base_part = normalized_symbol.split("-", 1)[0]
-            # Order: base, original, with -EQ
-            symbol_variants.extend([base_part, normalized_symbol, f"{base_part}-EQ"])
+            payload["symbol"] = str(symbol).upper()
+
+        trading_logger.log_system_event("iifl_hist_attempt", {
+            "attempt": 1,
+            "variant": "single_request",
+            "payload_keys": list(payload.keys())
+        })
         
-        # Dedupe while preserving order
-        seen: set[str] = set()
-        symbol_variants = [s for s in symbol_variants if not (s in seen or seen.add(s))]
-
-        # --- Attempt Definitions ---
-        # Attempt 1: The most reliable format found in other scripts (instrumentId, dd-Mon-YYYY)
-        if is_numeric_symbol:
-            attempts.append({
-                "payload": {"InstrumentId": str(normalized_symbol), "exchange": "NSEEQ", "interval": interval_norm, "fromDate": dd_mon_yyyy_from, "toDate": dd_mon_yyyy_to},
-                "desc": "instrumentId_exchange_ddMonYYYY"
-            })
-
-        # Attempt 2: Symbol with exchange and dd-Mon-YYYY date format
-        for sym in symbol_variants:
-            if not str(sym).isdigit():
-                attempts.append({
-                    "payload": {"symbol": sym, "exchange": "NSEEQ", "interval": interval_norm, "fromDate": dd_mon_yyyy_from, "toDate": dd_mon_yyyy_to},
-                    "desc": "symbol_exchange_ddMonYYYY"
-                })
-
-        # Attempt 3: Basic symbol with YYYY-MM-DD date format
-        for sym in symbol_variants:
-            attempts.append({
-                "payload": {"symbol": sym, "interval": interval_norm, "fromDate": from_date, "toDate": to_date},
-                "desc": "symbol_raw_interval_and_date"
-            })
-
-        # Attempt 4: Basic instrumentId with YYYY-MM-DD date format
-        if is_numeric_symbol:
-            attempts.append({
-                "payload": {"InstrumentId": str(normalized_symbol), "interval": interval_norm, "fromDate": from_date, "toDate": to_date},
-                "desc": "instrumentId_raw_interval_and_date"
-            })
-
-        # Dedupe attempts to minimize redundant calls
-        unique_attempts: list[dict] = []
-        seen_keys: set[str] = set()
-        for a in attempts:
-            k = json.dumps(a.get("payload", {}), sort_keys=True)
-            if k not in seen_keys:
-                seen_keys.add(k)
-                unique_attempts.append(a)
-
-        # Cap total attempts to avoid excessive API usage
-
-        if len(unique_attempts) > 2:
-            unique_attempts = unique_attempts[:2]
-
-
-
-        # Execute attempts sequentially until one yields data
-        last_response: Optional[Dict] = None
-        for idx, attempt in enumerate(unique_attempts, start=1):
-            payload = attempt["payload"]
-            desc = attempt["desc"]
-            trading_logger.log_system_event("iifl_hist_attempt", {
-                "attempt": idx,
-                "variant": desc,
-                "payload_keys": list(payload.keys())
-            })
-            response = await self._make_api_request("POST", "/marketdata/historicaldata", payload)
-            last_response = response
-            if _has_payload(response):
-                trading_logger.log_system_event("iifl_hist_success", {
-                    "attempt": idx,
-                    "variant": desc
-                })
-                return response
-
-        # If none succeeded, return the last response for visibility
-        return last_response
+        return await self._make_api_request("POST", "/marketdata/historicaldata", payload)
     
     async def get_market_quotes(self, instruments: List[str]) -> Optional[Dict]:
         """Get real-time market quotes"""
