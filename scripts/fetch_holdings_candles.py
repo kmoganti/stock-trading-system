@@ -61,7 +61,7 @@ def fetch_direct(token: str, instrument_id: str | int, from_date_str: str, to_da
     headers = {"Content-Type": "application/json", "Authorization": token}
     payload = {
         "exchange": "NSEEQ",
-        "instrumentId": str(instrument_id),
+        "InstrumentId": str(instrument_id),
         "interval": "1 day",
         "fromDate": from_date_str,
         "toDate": to_date_str,

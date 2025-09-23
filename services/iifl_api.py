@@ -693,6 +693,7 @@ class IIFLAPIService:
             "exchange": "NSEEQ",
             "interval": interval_norm,
             "fromDate": dd_mon_yyyy_from,
+            "toDate": dd_mon_yyyy_to,
         }
 
         if str(symbol).isdigit():
