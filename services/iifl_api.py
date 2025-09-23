@@ -662,14 +662,14 @@ class IIFLAPIService:
     
     # Market Data
     async def get_historical_data(self, symbol: str, interval: str, from_date: str, to_date: str) -> Optional[Dict]:
-        """Get historical OHLCV data"""
-        
+        """Get historical OHLCV data with a single request (no fallbacks)."""
+
         # --- Date and Interval Preparation ---
         try:
             from_dt_parsed = datetime.strptime(from_date, "%Y-%m-%d")
             to_dt_parsed = datetime.strptime(to_date, "%Y-%m-%d")
-            dd_mon_yyyy_from = from_dt_parsed.strftime("%d-%b-%Y")
-            dd_mon_yyyy_to = to_dt_parsed.strftime("%d-%b-%Y")
+            dd_mon_yyyy_from = from_dt_parsed.strftime("%d-%b-%Y").lower()
+            dd_mon_yyyy_to = to_dt_parsed.strftime("%d-%b-%Y").lower()
         except Exception:
             dd_mon_yyyy_from = from_date
             dd_mon_yyyy_to = to_date
@@ -697,6 +697,7 @@ class IIFLAPIService:
         }
 
         if str(symbol).isdigit():
+            # Provider accepts InstrumentId (camel-case I) based on observed contract file & logs
             payload["InstrumentId"] = str(symbol)
         else:
             payload["symbol"] = str(symbol).upper()
@@ -706,7 +707,7 @@ class IIFLAPIService:
             "variant": "single_request",
             "payload_keys": list(payload.keys())
         })
-        
+
         return await self._make_api_request("POST", "/marketdata/historicaldata", payload)
     
     async def get_market_quotes(self, instruments: List[str]) -> Optional[Dict]:
