@@ -86,7 +86,9 @@ class MarketStreamService:
             return
 
         try:
-            conn_req = f'{{"host": "bridge.iiflcapital.com", "port": 9906, "token": "{session_token}"}}'
+            # Allow overriding the bridge port via environment variable for easy updates
+            bridge_port = int(os.getenv("IIFL_BRIDGE_PORT", "8883"))
+            conn_req = f'{{"host": "bridge.iiflcapital.com", "port": {bridge_port}, "token": "{session_token}"}}'
             self.connection.connect_host(conn_req)
             self.is_connected = True
             logger.info("Successfully connected to IIFL Market Stream.")

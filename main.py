@@ -301,6 +301,12 @@ async def auth_management_page(request: Request):
     """IIFL Authentication management page"""
     return templates.TemplateResponse("auth_management.html", {"request": request})
 
+
+@app.get("/guide")
+async def guide_page(request: Request):
+    """Simple guide/help page"""
+    return templates.TemplateResponse("guide.html", {"request": request})
+
 if __name__ == "__main__":
     settings = get_settings()
     
