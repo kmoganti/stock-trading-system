@@ -75,19 +75,20 @@ async def lifespan(app: FastAPI):
     trading_logger.log_system_event("database_initialized")
     app.state.market_stream_service = None
     
-    # Start Telegram bot if configured
+    # Start Telegram bot if configured (disabled by default unless explicitly enabled)
     app.state.telegram_bot = None
     try:
         telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
         telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        if telegram_token and telegram_chat_id:
+        settings_for_telegram = get_settings()
+        if telegram_token and telegram_chat_id and getattr(settings_for_telegram, "telegram_bot_enabled", False):
             bot = TelegramBot()
             await setup_handlers(bot)
             await bot.start()
             app.state.telegram_bot = bot
             logger.info("Telegram bot started")
         else:
-            logger.warning("Telegram bot not started: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set")
+            logger.warning("Telegram bot not started: disabled or missing TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID")
     except Exception as e:
         logger.error(f"Failed to start Telegram bot: {str(e)}")
 

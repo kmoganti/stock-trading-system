@@ -2,6 +2,7 @@ import asyncio
 import logging
 from typing import Dict, Any
 from .bot import TelegramBot
+from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -11,9 +12,11 @@ async def setup_handlers(telegram_bot: TelegramBot):
         # Initialize the bot
         await telegram_bot.initialize()
         
-        # Start background tasks
-        asyncio.create_task(signal_monitoring_task(telegram_bot))
-        asyncio.create_task(risk_monitoring_task(telegram_bot))
+        # Optionally start background tasks (disabled by default for performance)
+        settings = get_settings()
+        if getattr(settings, "telegram_background_tasks_enabled", False):
+            asyncio.create_task(signal_monitoring_task(telegram_bot))
+            asyncio.create_task(risk_monitoring_task(telegram_bot))
         
         logger.info("Telegram bot handlers setup completed")
         

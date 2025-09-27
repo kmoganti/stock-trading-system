@@ -61,6 +61,8 @@ class StrategyService:
         self.settings = get_settings()
         self.watchlist_service = WatchlistService(db) if db is not None else None
         self._watchlist_by_category: Dict[Optional[str], List[str]] = {}
+        from services.telegram_notifier import TelegramNotifier
+        self._notifier = TelegramNotifier()
         self._strategy_map = {
             "ema_crossover": self._ema_crossover_strategy,
             "bollinger_bands": self._bollinger_bands_strategy,
@@ -466,6 +468,15 @@ class StrategyService:
     ) -> List[TradingSignal]:
         """Generate trading signals for a symbol"""
         try:
+            # Notify when screening starts for the first symbol per category in this session
+            if getattr(self.settings, "telegram_notifications_enabled", True):
+                key = f"_notified_{category}"
+                if not hasattr(self, key):
+                    try:
+                        await self._notifier.send(f"▶️ Starting {category.replace('_', ' ')} screening...")
+                    except Exception:
+                        pass
+                    setattr(self, key, True)
             # Determine data fetching parameters based on trading category
             interval = "1D"
             days_to_fetch = 100
