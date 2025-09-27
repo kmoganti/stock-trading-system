@@ -13,10 +13,12 @@ class AuthCodeUpdate(BaseModel):
     auth_code: str
 
 class AuthStatus(BaseModel):
-    is_authenticated: bool
-    token_expiry: Optional[datetime]
-    auth_code_expiry: Optional[datetime]
-    last_error: Optional[str]
+    # Align with tests expecting 'authenticated' and 'client_id'
+    authenticated: bool
+    client_id: Optional[str] = None
+    token_expiry: Optional[datetime] = None
+    auth_code_expiry: Optional[datetime] = None
+    last_error: Optional[str] = None
 
 @router.get("/status", response_model=AuthStatus)
 async def get_auth_status():
@@ -27,13 +29,19 @@ async def get_auth_status():
         # Consider authenticated if there is a non-mock session token
         token = getattr(service, 'session_token', None)
         is_real_token = bool(token) and not str(token).startswith("mock_")
+        try:
+            from config.settings import get_settings
+            client_id_val = getattr(get_settings(), 'iifl_client_id', None)
+        except Exception:
+            client_id_val = None
         auth_status = AuthStatus(
-            is_authenticated=is_real_token,
+            authenticated=is_real_token,
+            client_id=client_id_val,
             token_expiry=getattr(service, 'token_expiry', None),
             auth_code_expiry=getattr(service, 'auth_code_expiry', None),
             last_error=None
         )
-        logger.info(f"Auth status: authenticated={auth_status.is_authenticated}")
+        logger.info(f"Auth status: authenticated={auth_status.authenticated}")
         return auth_status
     except Exception as e:
         logger.error(f"Error getting auth status: {str(e)}")
