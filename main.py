@@ -110,42 +110,42 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to start market data stream: {e}", exc_info=True)
     
     # Schedule daily housekeeping (log pruning) at 00:30
-    try:
-        scheduler = AsyncIOScheduler()
-        scheduler.add_job(
-            lambda: asyncio.create_task(trading_logger.daily_housekeeping()),
-            CronTrigger(hour=0, minute=30),
-            name="daily_housekeeping"
-        )
-        # Prefetch watchlist historical data every 30 minutes
-        try:
-            from services.scheduler_tasks import build_daily_intraday_watchlist
-            # Schedule to run every weekday at 9:00 AM
-            scheduler.add_job(
-                lambda: asyncio.create_task(build_daily_intraday_watchlist()),
-                CronTrigger(day_of_week='mon-fri', hour=9, minute=0),
-                name="build_intraday_watchlist"
-            )
-            logger.info("Scheduled daily intraday watchlist builder")
-        except Exception as e:
-            logger.warning(f"Failed to schedule intraday watchlist builder: {str(e)}")
-        try:
-            from services.scheduler_tasks import prefetch_watchlist_historical_data
-            scheduler.add_job(
-                lambda: asyncio.create_task(prefetch_watchlist_historical_data()),
-                IntervalTrigger(minutes=30),
-                name="prefetch_watchlist_historical_30m",
-                coalesce=True,
-                max_instances=1
-            )
-            logger.info("Scheduled 30-minute watchlist historical prefetch")
-        except Exception as e:
-            logger.warning(f"Failed to schedule 30-minute historical prefetch: {str(e)}")
-        scheduler.start()
-        app.state.scheduler = scheduler
-        logger.info("Scheduler started for daily housekeeping")
-    except Exception as e:
-        logger.warning(f"Failed to start scheduler: {str(e)}")
+    # try:
+    #     scheduler = AsyncIOScheduler()
+    #     scheduler.add_job(
+    #         lambda: asyncio.create_task(trading_logger.daily_housekeeping()),
+    #         CronTrigger(hour=0, minute=30),
+    #         name="daily_housekeeping"
+    #     )
+    #     # Prefetch watchlist historical data every 30 minutes
+    #     try:
+    #         from services.scheduler_tasks import build_daily_intraday_watchlist
+    #         # Schedule to run every weekday at 9:00 AM
+    #         scheduler.add_job(
+    #             lambda: asyncio.create_task(build_daily_intraday_watchlist()),
+    #             CronTrigger(day_of_week='mon-fri', hour=9, minute=0),
+    #             name="build_intraday_watchlist"
+    #         )
+    #         logger.info("Scheduled daily intraday watchlist builder")
+    #     except Exception as e:
+    #         logger.warning(f"Failed to schedule intraday watchlist builder: {str(e)}")
+    #     try:
+    #         from services.scheduler_tasks import prefetch_watchlist_historical_data
+    #         scheduler.add_job(
+    #             lambda: asyncio.create_task(prefetch_watchlist_historical_data()),
+    #             IntervalTrigger(minutes=30),
+    #             name="prefetch_watchlist_historical_30m",
+    #             coalesce=True,
+    #             max_instances=1
+    #         )
+    #         logger.info("Scheduled 30-minute watchlist historical prefetch")
+    #     except Exception as e:
+    #         logger.warning(f"Failed to schedule 30-minute historical prefetch: {str(e)}")
+    #     scheduler.start()
+    #     app.state.scheduler = scheduler
+    #     logger.info("Scheduler started for daily housekeeping")
+    # except Exception as e:
+    #     logger.warning(f"Failed to start scheduler: {str(e)}")
 
     yield
     

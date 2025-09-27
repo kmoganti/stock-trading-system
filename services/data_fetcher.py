@@ -44,9 +44,9 @@ class DataFetcher:
             # Long-term cache for portfolio/margin, invalidated by order events
             self._portfolio_cache: Optional[Dict[str, Any]] = None
             self._margin_cache: Optional[Dict[str, Any]] = None
-			# Track when portfolio cache was set; apply a soft TTL to avoid stale emptiness
-			self._portfolio_cache_at: Optional[datetime] = None
-			self._portfolio_cache_ttl_seconds: int = 60
+            # Track when portfolio cache was set; apply a soft TTL to avoid stale emptiness
+            self._portfolio_cache_at: Optional[datetime] = None
+            self._portfolio_cache_ttl_seconds: int = 60
             self._initialized = True
     
     def _is_cache_valid(self, key: str, ttl_seconds: int = 60) -> bool:
@@ -570,12 +570,12 @@ class DataFetcher:
     async def get_portfolio_data(self) -> Dict[str, Any]:
         """Get complete portfolio data (holdings + positions)"""
         try:
-			# Serve from cache only if within TTL and we have non-empty holdings/positions
-			if self._portfolio_cache is not None and self._portfolio_cache_at is not None:
-				cache_is_fresh = datetime.now() < (self._portfolio_cache_at + timedelta(seconds=self._portfolio_cache_ttl_seconds))
-				has_meaningful_data = bool(self._portfolio_cache.get("holdings")) or bool(self._portfolio_cache.get("positions"))
-				if cache_is_fresh and has_meaningful_data:
-					return self._portfolio_cache
+            # Serve from cache only if within TTL and we have non-empty holdings/positions
+            if self._portfolio_cache is not None and self._portfolio_cache_at is not None:
+                cache_is_fresh = datetime.now() < (self._portfolio_cache_at + timedelta(seconds=self._portfolio_cache_ttl_seconds))
+                has_meaningful_data = bool(self._portfolio_cache.get("holdings")) or bool(self._portfolio_cache.get("positions"))
+                if cache_is_fresh and has_meaningful_data:
+                    return self._portfolio_cache
 
             # Fetch holdings and positions concurrently
             holdings_task = self.iifl.get_holdings()
@@ -594,17 +594,17 @@ class DataFetcher:
                 "total_pnl_percent": 0.0
             }
             
-			# Process holdings
-			if isinstance(holdings_result, dict) and ((holdings_result.get("status") or holdings_result.get("stat")) == "Ok"):
-				# Robustly extract list from common keys: result, resultData, data
-				raw_list = None
-				for key in ["result", "resultData", "data"]:
-					value = holdings_result.get(key)
-					if isinstance(value, list):
-						raw_list = value
-						break
-				raw_holdings = raw_list or []
-				processed_holdings = self._process_holdings_data(raw_holdings)
+            # Process holdings
+            if isinstance(holdings_result, dict) and ((holdings_result.get("status") or holdings_result.get("stat")) == "Ok"):
+                # Robustly extract list from common keys: result, resultData, data
+                raw_list = None
+                for key in ["result", "resultData", "data"]:
+                    value = holdings_result.get(key)
+                    if isinstance(value, list):
+                        raw_list = value
+                        break
+                raw_holdings = raw_list or []
+                processed_holdings = self._process_holdings_data(raw_holdings)
                 portfolio_data["holdings"] = processed_holdings
                 
                 # Calculate totals from holdings
@@ -645,8 +645,8 @@ class DataFetcher:
             if portfolio_data["total_invested"] > 0:
                 portfolio_data["total_pnl_percent"] = (portfolio_data["total_pnl"] / portfolio_data["total_invested"]) * 100
             
-			self._portfolio_cache = portfolio_data
-			self._portfolio_cache_at = datetime.now()
+            self._portfolio_cache = portfolio_data
+            self._portfolio_cache_at = datetime.now()
             return portfolio_data
             
         except Exception as e:
