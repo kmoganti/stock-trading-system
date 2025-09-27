@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>User Guide • Stock Trading System</title>
+	<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50">
+	<div class="max-w-6xl mx-auto px-4 py-8">
+		<h1 class="text-3xl font-bold mb-2">Stock Trading System • User Guide</h1>
+		<p class="text-gray-600 mb-8">End-to-end usage, operations, scripts, and API reference</p>
+
+		<div class="grid grid-cols-1 lg:grid-cols-4 gap-8">
+			<nav class="lg:col-span-1 bg-white rounded-md shadow p-4 h-max sticky top-4">
+				<h2 class="font-semibold mb-3">Contents</h2>
+				<ul class="space-y-2 text-sm">
+					<li><a href="#quickstart" class="text-blue-600 hover:underline">Quick Start</a></li>
+					<li><a href="#configuration" class="text-blue-600 hover:underline">Configuration</a></li>
+					<li><a href="#running" class="text-blue-600 hover:underline">Running</a></li>
+					<li><a href="#testing" class="text-blue-600 hover:underline">Testing</a></li>
+					<li><a href="#dashboard" class="text-blue-600 hover:underline">Web Dashboard</a></li>
+					<li><a href="#api" class="text-blue-600 hover:underline">API Reference</a></li>
+					<li><a href="#scripts" class="text-blue-600 hover:underline">Scripts</a></li>
+					<li><a href="#e2e" class="text-blue-600 hover:underline">E2E Flow</a></li>
+					<li><a href="#troubleshooting" class="text-blue-600 hover:underline">Troubleshooting</a></li>
+				</ul>
+			</nav>
+
+			<main class="lg:col-span-3 space-y-10">
+				<section id="quickstart" class="bg-white rounded-md shadow p-6">
+					<h2 class="text-2xl font-semibold mb-4">Quick Start</h2>
+					<ol class="list-decimal pl-6 space-y-2 text-sm">
+						<li>Python 3.13 with virtualenv: create and activate <code>.venv</code>.</li>
+						<li>Install dependencies: <code>pip install -r requirements-minimal.txt</code>.</li>
+						<li>Copy environment: <code>cp .env.example .env</code> and update credentials.</li>
+						<li>Initialize DB: <code>alembic upgrade head</code>.</li>
+						<li>Start server: <code>python run.py</code> or <code>python main.py</code>.</li>
+					</ol>
+				</section>
+
+				<section id="configuration" class="bg-white rounded-md shadow p-6">
+					<h2 class="text-2xl font-semibold mb-4">Configuration</h2>
+					<p class="text-sm text-gray-700 mb-3">Env vars (see <code>config/settings.py</code>):</p>
+					<div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+						<div>
+							<h3 class="font-semibold mb-1">Core</h3>
+							<ul class="list-disc pl-5 space-y-1">
+								<li><code>IIFL_CLIENT_ID</code>, <code>IIFL_AUTH_CODE</code>, <code>IIFL_APP_SECRET</code></li>
+								<li><code>ENVIRONMENT</code> (development|staging|production)</li>
+								<li><code>HOST</code>, <code>PORT</code></li>
+								<li><code>DATABASE_URL</code> (default sqlite+aiosqlite:///./trading_system.db)</li>
+							</ul>
+						</div>
+						<div>
+							<h3 class="font-semibold mb-1">Trading</h3>
+							<ul class="list-disc pl-5 space-y-1">
+								<li><code>AUTO_TRADE</code>, <code>DRY_RUN</code></li>
+								<li><code>RISK_PER_TRADE</code>, <code>MAX_POSITIONS</code>, <code>MAX_DAILY_LOSS</code></li>
+								<li><code>DEFAULT_BUY_PRODUCT</code>, <code>SHORT_SELL_PRODUCT</code></li>
+							</ul>
+						</div>
+						<div>
+							<h3 class="font-semibold mb-1">Telegram</h3>
+							<ul class="list-disc pl-5 space-y-1">
+								<li><code>TELEGRAM_BOT_TOKEN</code>, <code>TELEGRAM_CHAT_ID</code></li>
+							</ul>
+						</div>
+						<div>
+							<h3 class="font-semibold mb-1">Logging / Sentry</h3>
+							<ul class="list-disc pl-5 space-y-1">
+								<li><code>LOG_LEVEL</code>, <code>LOG_FILE</code></li>
+								<li><code>SENTRY_DSN</code> (optional)</li>
+							</ul>
+						</div>
+					</div>
+				</section>
+
+				<section id="running" class="bg-white rounded-md shadow p-6">
+					<h2 class="text-2xl font-semibold mb-4">Running</h2>
+					<ul class="list-disc pl-5 space-y-1 text-sm">
+						<li>App entrypoints: <code>python run.py</code> or <code>python main.py</code>.</li>
+						<li>Dashboard: <code>http://localhost:8000/</code>. Built-in pages: <code>/signals</code>, <code>/portfolio</code>, <code>/reports</code>, <code>/settings</code>, <code>/watchlist</code>, <code>/auth</code>.</li>
+						<li>OpenAPI: <code>/docs</code>.</li>
+					</ul>
+				</section>
+
+				<section id="testing" class="bg-white rounded-md shadow p-6">
+					<h2 class="text-2xl font-semibold mb-4">Testing</h2>
+					<p class="text-sm mb-3">Run all tests with <code>pytest</code>. Selected suites live in <code>tests/</code> and root-level <code>test_*.py</code>.</p>
+					<pre class="bg-gray-900 text-gray-100 p-3 rounded text-xs overflow-x-auto">pytest -q</pre>
+					<p class="text-sm mt-3">Notes:</p>
+					<ul class="list-disc pl-5 space-y-1 text-sm">
+						<li>External broker calls are mocked in development; set <code>ENVIRONMENT=development</code>.</li>
+						<li>Ensure DB is initialized before integration tests.</li>
+					</ul>
+				</section>
+
+				<section id="dashboard" class="bg-white rounded-md shadow p-6">
+					<h2 class="text-2xl font-semibold mb-4">Web Dashboard</h2>
+					<ul class="list-disc pl-5 space-y-1 text-sm">
+						<li>Dashboard <code>/</code>: status, metrics</li>
+						<li>Signals <code>/signals</code>: review/approve/reject</li>
+						<li>Portfolio <code>/portfolio</code>: positions, holdings, margins</li>
+						<li>Reports <code>/reports</code>: daily/monthly PnL</li>
+						<li>Settings <code>/settings</code>: runtime controls</li>
+						<li>Watchlist <code>/watchlist</code>: symbols + categories</li>
+						<li>Auth <code>/auth</code>: IIFL auth management</li>
+					</ul>
+				</section>
+
+				<section id="api" class="bg-white rounded-md shadow p-6">
+					<h2 class="text-2xl font-semibold mb-4">API Reference</h2>
+					<div class="space-y-4 text-sm">
+						<div>
+							<h3 class="font-semibold">System</h3>
+							<ul class="list-disc pl-5">
+								<li>GET <code>/api/system/status</code></li>
+								<li>POST <code>/api/system/halt</code>, POST <code>/api/system/resume</code></li>
+							</ul>
+						</div>
+						<div>
+							<h3 class="font-semibold">Signals</h3>
+							<ul class="list-disc pl-5">
+								<li>GET <code>/api/signals</code>, POST <code>/api/signals</code></li>
+								<li>POST <code>/api/signals/{id}/approve</code>, <code>/reject</code></li>
+							</ul>
+						</div>
+						<div>
+							<h3 class="font-semibold">Portfolio</h3>
+							<ul class="list-disc pl-5">
+								<li>GET <code>/api/portfolio/summary</code></li>
+								<li>GET <code>/api/portfolio/positions</code>, <code>/holdings</code>, <code>/margin</code></li>
+							</ul>
+						</div>
+						<div>
+							<h3 class="font-semibold">Risk, Reports, Backtest</h3>
+							<ul class="list-disc pl-5">
+								<li>Risk: GET <code>/api/risk/metrics</code>, POST <code>/api/risk/validate</code></li>
+								<li>Reports: GET <code>/api/reports/daily/{date}</code>, POST <code>/api/reports/eod/generate</code></li>
+								<li>Backtest: POST <code>/api/backtest/run</code>, GET <code>/api/backtest/{id}/results</code></li>
+							</ul>
+						</div>
+					</div>
+				</section>
+
+				<section id="scripts" class="bg-white rounded-md shadow p-6">
+					<h2 class="text-2xl font-semibold mb-4">Scripts</h2>
+					<ul class="list-disc pl-5 space-y-1 text-sm">
+						<li>Historical Candles: <code>python scripts/fetch_holdings_candles.py</code> (inputs under <code>files/</code>)</li>
+						<li>Startup: <code>python run.py</code> performs checks and launches server</li>
+					</ul>
+				</section>
+
+				<section id="e2e" class="bg-white rounded-md shadow p-6">
+					<h2 class="text-2xl font-semibold mb-4">End-to-End Flow (Development)</h2>
+					<ol class="list-decimal pl-6 space-y-2 text-sm">
+						<li>Set <code>ENVIRONMENT=development</code> to enable mock auth token fallback.</li>
+						<li>Start server, open <code>/signals</code>, approve a mock signal, observe <code>services.logging_service</code> entries.</li>
+						<li>Use <code>/api/portfolio/summary</code> to verify portfolio aggregation and margin cache.</li>
+						<li>Generate daily report via <code>/api/reports/eod/generate</code> then view under <code>/reports</code>.</li>
+					</ol>
+				</section>
+
+				<section id="troubleshooting" class="bg-white rounded-md shadow p-6">
+					<h2 class="text-2xl font-semibold mb-4">Troubleshooting</h2>
+					<ul class="list-disc pl-5 space-y-1 text-sm">
+						<li>Missing wheels on Python 3.13: use <code>requirements-minimal.txt</code> or system packages for <code>venv</code>.</li>
+						<li>IIFL connectivity in dev: mock token is used automatically if authentication fails.</li>
+						<li>Database locked: stop the app, delete <code>trading_system.db</code>, re-run migrations.</li>
+					</ul>
+				</section>
+			</main>
+		</div>
+	</div>
+</body>
+</html>
