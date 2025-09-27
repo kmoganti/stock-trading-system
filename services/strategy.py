@@ -509,6 +509,7 @@ class StrategyService:
                     else self._strategy_map
                 )
                 for name, func in strategies_to_run.items():
+                    # Full-featured strategies expect a dataframe
                     signal = func(indicators, symbol)
                     if signal:
                         signals.append(signal)

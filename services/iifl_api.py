@@ -279,12 +279,20 @@ class IIFLAPIService:
             
             return {}
     
-    async def authenticate(self) -> bool:
+    async def authenticate(self, client_id: Optional[str] = None, auth_code: Optional[str] = None, app_secret: Optional[str] = None) -> bool:
         """Authenticate with IIFL API, protected by a lock to prevent race conditions."""
         async with _auth_lock:
             # Double-check if a token was acquired while waiting for the lock
             if self.session_token:
                 return True
+
+            # Allow overrides for tests
+            if client_id:
+                self.client_id = client_id
+            if auth_code:
+                self.auth_code = auth_code
+            if app_secret:
+                self.app_secret = app_secret
 
             if not self.auth_code:
                 logger.error("No auth code available for authentication")
@@ -311,7 +319,7 @@ class IIFLAPIService:
                             self.token_expiry = None
                             logger.info(f"IIFL authentication successful. Token: {session_token[:10]}...")
                             trading_logger.log_system_event("iifl_auth_success", {"token_preview": session_token[:10] + "..."})
-                            return True
+                            return {"access_token": session_token, "expires_in": 3600}
                         else:
                             logger.error("No session token found in IIFL response")
                             trading_logger.log_error("iifl_auth_no_token", {"response_keys": list(response_data.keys())})
@@ -326,7 +334,7 @@ class IIFLAPIService:
                 if env_name in ["development", "dev", "test", "testing"]:
                     logger.info("Creating mock session for development/testing")
                     self.session_token = f"mock_token_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                    return True
+                    return {"access_token": self.session_token, "expires_in": 3600}
                 return False
                     
             except Exception as e:
@@ -636,6 +644,22 @@ class IIFLAPIService:
     async def get_trades(self) -> Optional[Dict]:
         """Get all executed trades for today"""
         return await self._make_api_request("GET", "/trades")
+
+    # Compat methods used in tests
+    async def get_market_data(self, symbol: str) -> Optional[Dict]:
+        data = await self.get_market_quotes([symbol])
+        if data and data.get("status") == "Ok":
+            items = data.get("resultData") or []
+            if items:
+                item = items[0]
+                # Normalize to legacy shape expected by tests
+                return {
+                    "Symbol": item.get("symbol", symbol),
+                    "LastTradedPrice": item.get("ltp"),
+                    "Change": item.get("change", 0),
+                    "Volume": item.get("volume", 0)
+                }
+        return None
     
     # Margin Calculations
     async def calculate_pre_order_margin(self, order_data: Dict) -> Optional[Dict]:

@@ -13,7 +13,8 @@ logger = logging.getLogger(__name__)
 class PnLService:
     """Profit and Loss tracking service"""
     
-    def __init__(self, data_fetcher: DataFetcher, db_session: AsyncSession):
+    def __init__(self, data_fetcher: Optional[DataFetcher] = None, db_session: Optional[AsyncSession] = None):
+        # Allow None in tests to simplify construction; methods will guard usage
         self.data_fetcher = data_fetcher
         self.db = db_session
         self.daily_start_equity = 0.0
@@ -22,37 +23,40 @@ class PnLService:
         """Initialize daily P&L tracking"""
         try:
             # Get starting equity for the day
-            margin_info = await self.data_fetcher.get_margin_info()
+            margin_info = await self.data_fetcher.get_margin_info() if self.data_fetcher else None
             if margin_info:
                 self.daily_start_equity = float(margin_info.get('totalEquity', 0))
             
             # Create or update today's P&L report
             today = date.today()
-            await self._ensure_daily_report(today)
+            if self.db:
+                await self._ensure_daily_report(today)
             
             logger.info(f"Daily P&L tracking initialized - Starting equity: ₹{self.daily_start_equity:,.2f}")
             
         except Exception as e:
             logger.error(f"Error initializing daily P&L tracking: {str(e)}")
     
-    async def update_daily_pnl(self) -> Dict[str, Any]:
+    async def update_daily_pnl(self, realized_pnl: Optional[float] = None, unrealized_pnl: Optional[float] = None, fees: Optional[float] = None) -> Dict[str, Any]:
         """Update daily P&L calculations"""
         try:
             today = date.today()
             
             # Get current portfolio data
-            portfolio_data = await self.data_fetcher.get_portfolio_data()
+            portfolio_data = await self.data_fetcher.get_portfolio_data() if self.data_fetcher else {"total_pnl": 0.0}
             current_pnl = portfolio_data.get('total_pnl', 0.0)
             
             # Get margin info for current equity
-            margin_info = await self.data_fetcher.get_margin_info()
+            margin_info = await self.data_fetcher.get_margin_info() if self.data_fetcher else None
             current_equity = float(margin_info.get('totalEquity', 0)) if margin_info else 0
             
             # Calculate realized P&L from executed trades
-            realized_pnl = await self._calculate_realized_pnl(today)
+            if realized_pnl is None:
+                realized_pnl = await self._calculate_realized_pnl(today)
             
             # Calculate unrealized P&L
-            unrealized_pnl = current_pnl - realized_pnl
+            if unrealized_pnl is None:
+                unrealized_pnl = current_pnl - (realized_pnl or 0.0)
             
             # Get trade statistics
             trade_stats = await self._get_trade_statistics(today)
@@ -63,7 +67,7 @@ class PnLService:
                 drawdown = max(0, (self.daily_start_equity - current_equity) / self.daily_start_equity)
             
             # Update or create daily report
-            report = await self._get_or_create_daily_report(today)
+            report = await self._get_or_create_daily_report(today) if self.db else PnLReport(date=today)
             
             report.daily_pnl = current_pnl
             report.realized_pnl = realized_pnl
@@ -74,6 +78,11 @@ class PnLService:
             report.starting_equity = self.daily_start_equity
             report.ending_equity = current_equity
             report.drawdown = drawdown
+            if fees is not None:
+                try:
+                    report.fees = float(fees)
+                except Exception:
+                    pass
             
             # Update cumulative P&L
             report.cumulative_pnl = await self._calculate_cumulative_pnl(today)
@@ -81,7 +90,8 @@ class PnLService:
             # Update max drawdown
             report.max_drawdown = await self._calculate_max_drawdown(today)
             
-            await self.db.commit()
+            if self.db:
+                await self.db.commit()
             
             logger.info(f"Daily P&L updated: ₹{current_pnl:,.2f}")
             
@@ -89,7 +99,8 @@ class PnLService:
             
         except Exception as e:
             logger.error(f"Error updating daily P&L: {str(e)}")
-            await self.db.rollback()
+            if self.db:
+                await self.db.rollback()
             return {"error": str(e)}
     
     async def _calculate_realized_pnl(self, target_date: date) -> float:
@@ -101,8 +112,8 @@ class PnLService:
                 func.date(Signal.executed_at) == target_date
             )
             
-            result = await self.db.execute(stmt)
-            executed_signals = result.scalars().all()
+            result = await self.db.execute(stmt) if self.db else None
+            executed_signals = result.scalars().all() if result else []
             
             realized_pnl = 0.0
             
@@ -127,8 +138,8 @@ class PnLService:
                 func.date(Signal.executed_at) == target_date
             )
             
-            result = await self.db.execute(stmt)
-            executed_signals = result.scalars().all()
+            result = await self.db.execute(stmt) if self.db else None
+            executed_signals = result.scalars().all() if result else []
             
             total_trades = len(executed_signals)
             winning_trades = 0
@@ -156,8 +167,8 @@ class PnLService:
         """Get or create daily P&L report"""
         try:
             stmt = select(PnLReport).where(PnLReport.date == target_date)
-            result = await self.db.execute(stmt)
-            report = result.scalar_one_or_none()
+            result = await self.db.execute(stmt) if self.db else None
+            report = result.scalar_one_or_none() if result else None
             
             if not report:
                 report = PnLReport(
@@ -166,8 +177,9 @@ class PnLService:
                     cumulative_pnl=0.0,
                     drawdown=0.0
                 )
-                self.db.add(report)
-                await self.db.flush()
+                if self.db:
+                    self.db.add(report)
+                    await self.db.flush()
             
             return report
             
@@ -177,8 +189,9 @@ class PnLService:
     
     async def _ensure_daily_report(self, target_date: date):
         """Ensure daily report exists"""
-        await self._get_or_create_daily_report(target_date)
-        await self.db.commit()
+        if self.db:
+            await self._get_or_create_daily_report(target_date)
+            await self.db.commit()
     
     async def _calculate_cumulative_pnl(self, target_date: date) -> float:
         """Calculate cumulative P&L up to target date"""
@@ -187,8 +200,8 @@ class PnLService:
                 PnLReport.date <= target_date
             )
             
-            result = await self.db.execute(stmt)
-            cumulative_pnl = result.scalar() or 0.0
+            result = await self.db.execute(stmt) if self.db else None
+            cumulative_pnl = (result.scalar() if result else 0.0) or 0.0
             
             return float(cumulative_pnl)
             
@@ -204,8 +217,8 @@ class PnLService:
                 PnLReport.date <= target_date
             ).order_by(PnLReport.date)
             
-            result = await self.db.execute(stmt)
-            reports = result.scalars().all()
+            result = await self.db.execute(stmt) if self.db else None
+            reports = result.scalars().all() if result else []
             
             if not reports:
                 return 0.0

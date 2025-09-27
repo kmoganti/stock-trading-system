@@ -16,9 +16,9 @@ logger = logging.getLogger(__name__)
 class OrderManager:
     """Order Management System for executing trades"""
     
-    def __init__(self, iifl_service: IIFLAPIService, risk_service: RiskService, 
-                 data_fetcher: DataFetcher, db_session: AsyncSession):
-        self.iifl = iifl_service
+    def __init__(self, iifl_service: Optional[IIFLAPIService] = None, risk_service: Optional[RiskService] = None, 
+                 data_fetcher: Optional[DataFetcher] = None, db_session: Optional[AsyncSession] = None):
+        self.iifl = iifl_service or IIFLAPIService()
         self.risk = risk_service
         self.data_fetcher = data_fetcher
         self.db = db_session
@@ -75,16 +75,18 @@ class OrderManager:
                 }
             )
             
-            self.db.add(signal)
-            await self.db.commit()
-            await self.db.refresh(signal)
+            if self.db:
+                self.db.add(signal)
+                await self.db.commit()
+                await self.db.refresh(signal)
             
             logger.info(f"Signal created: {signal.id} - {signal.symbol} {signal.signal_type.value}")
             return signal
             
         except Exception as e:
             logger.error(f"Error creating signal: {str(e)}")
-            await self.db.rollback()
+            if self.db:
+                await self.db.rollback()
             return None
     
     async def process_signal(self, signal: Signal) -> bool:
@@ -120,8 +122,8 @@ class OrderManager:
         try:
             # Get signal from database
             stmt = select(Signal).where(Signal.id == signal_id)
-            result = await self.db.execute(stmt)
-            signal = result.scalar_one_or_none()
+            result = await self.db.execute(stmt) if self.db else None
+            signal = result.scalar_one_or_none() if result else None
             
             if not signal:
                 return {"success": False, "message": "Signal not found"}
@@ -148,7 +150,8 @@ class OrderManager:
             if success:
                 signal.status = SignalStatus.APPROVED
                 signal.approved_at = datetime.now()
-                await self.db.commit()
+                if self.db:
+                    await self.db.commit()
                 return {"success": True, "message": "Signal approved and executed"}
             else:
                 return {"success": False, "message": "Signal execution failed"}
@@ -161,8 +164,8 @@ class OrderManager:
         """Reject a pending signal"""
         try:
             stmt = select(Signal).where(Signal.id == signal_id)
-            result = await self.db.execute(stmt)
-            signal = result.scalar_one_or_none()
+            result = await self.db.execute(stmt) if self.db else None
+            signal = result.scalar_one_or_none() if result else None
             
             if not signal:
                 return {"success": False, "message": "Signal not found"}
@@ -174,7 +177,8 @@ class OrderManager:
             signal.extras = signal.extras or {}
             signal.extras['rejection_reason'] = reason
             
-            await self.db.commit()
+            if self.db:
+                await self.db.commit()
             
             logger.info(f"Signal {signal_id} rejected: {reason}")
             return {"success": True, "message": "Signal rejected"}
@@ -192,6 +196,7 @@ class OrderManager:
                 signal.status = SignalStatus.EXECUTED
                 signal.executed_at = datetime.now()
                 signal.order_id = simulated_order_id
+            if self.db:
                 await self.db.commit()
                 logger.info(f"Simulated order execution for signal {signal.id} with id {simulated_order_id}")
                 return True
@@ -235,7 +240,8 @@ class OrderManager:
                     signal.executed_at = datetime.now()
                     signal.order_id = order_id
                     
-                    await self.db.commit()
+                    if self.db:
+                        await self.db.commit()
                     
                     # Track the order
                     self.pending_orders[order_id] = {
@@ -246,8 +252,9 @@ class OrderManager:
                     
                     # After a successful order, refresh caches once to reflect latest positions/margin
                     try:
-                        await self.data_fetcher.get_portfolio_data(force_refresh=True)
-                        await self.data_fetcher.get_margin_info(force_refresh=True)
+                        if self.data_fetcher:
+                            await self.data_fetcher.get_portfolio_data(force_refresh=True)
+                            await self.data_fetcher.get_margin_info(force_refresh=True)
                     except Exception:
                         pass
                     logger.info(f"Order executed: {order_id} for signal {signal.id}")
@@ -263,7 +270,8 @@ class OrderManager:
                 signal.status = SignalStatus.FAILED
                 signal.extras = signal.extras or {}
                 signal.extras['error_message'] = error_msg
-                await self.db.commit()
+                if self.db:
+                    await self.db.commit()
                 
                 return False
                 
@@ -274,7 +282,8 @@ class OrderManager:
             signal.status = SignalStatus.FAILED
             signal.extras = signal.extras or {}
             signal.extras['error_message'] = str(e)
-            await self.db.commit()
+            if self.db:
+                await self.db.commit()
             
             return False
     
@@ -297,8 +306,8 @@ class OrderManager:
                 Signal.expiry_time <= current_time
             )
             
-            result = await self.db.execute(stmt)
-            expired_signals = result.scalars().all()
+            result = await self.db.execute(stmt) if self.db else None
+            expired_signals = result.scalars().all() if result else []
             
             for signal in expired_signals:
                 await self._expire_signal(signal)
@@ -346,14 +355,15 @@ class OrderManager:
                         # Update signal status
                         signal_id = order_info["signal_id"]
                         stmt = select(Signal).where(Signal.id == signal_id)
-                        result = await self.db.execute(stmt)
-                        signal = result.scalar_one_or_none()
+                        result = await self.db.execute(stmt) if self.db else None
+                        signal = result.scalar_one_or_none() if result else None
                         
                         if signal:
                             signal.status = SignalStatus.FAILED
                             signal.extras = signal.extras or {}
                             signal.extras['order_status'] = order_status
-                            await self.db.commit()
+                            if self.db:
+                                await self.db.commit()
                         
                         del self.pending_orders[order_id]
                 
@@ -368,8 +378,8 @@ class OrderManager:
                 Signal.expiry_time > datetime.now()
             ).order_by(Signal.created_at.desc()).limit(limit)
             
-            result = await self.db.execute(stmt)
-            signals = result.scalars().all()
+            result = await self.db.execute(stmt) if self.db else None
+            signals = result.scalars().all() if result else []
             
             return [signal.to_dict() for signal in signals]
             
@@ -381,8 +391,8 @@ class OrderManager:
         """Get recent signals with all statuses"""
         try:
             stmt = select(Signal).order_by(Signal.created_at.desc()).limit(limit)
-            result = await self.db.execute(stmt)
-            signals = result.scalars().all()
+            result = await self.db.execute(stmt) if self.db else None
+            signals = result.scalars().all() if result else []
             
             return [signal.to_dict() for signal in signals]
             
@@ -393,7 +403,7 @@ class OrderManager:
     async def _get_available_capital(self) -> float:
         """Get available capital for trading"""
         try:
-            margin_info = await self.data_fetcher.get_margin_info()
+            margin_info = await self.data_fetcher.get_margin_info() if self.data_fetcher else None
             if margin_info:
                 return float(margin_info.get('availableMargin', 0))
             return 0.0
@@ -441,13 +451,38 @@ class OrderManager:
             logger.error(f"Error getting order status for {order_id}: {str(e)}")
             return None
 
+    # Simple compat methods for tests
+    async def place_order(self, signal: Dict) -> Dict:
+        """Compat: Place order directly via IIFL for tests."""
+        try:
+            order_data = {
+                "symbol": signal.get("symbol"),
+                "quantity": signal.get("quantity", 1),
+                "price": signal.get("price"),
+                "order_type": "BUY" if (signal.get("signal_type") in ("buy", "BUY")) else "SELL"
+            }
+            result = await self.iifl.place_order(order_data)
+            return result or {}
+        except Exception as e:
+            logger.error(f"Compat place_order failed: {str(e)}")
+            return {}
+
+    async def cancel_order(self, order_id: str) -> Dict:
+        try:
+            result = await self.iifl.cancel_order(order_id)
+            return result or {"Success": False}
+        except Exception as e:
+            logger.error(f"Compat cancel_order failed: {str(e)}")
+            return {"Success": False, "Message": str(e)}
+
     async def clear_all_signals(self) -> int:
         """Deletes all signals from the database. Returns the number of deleted signals."""
         try:
             from sqlalchemy import delete
             stmt = delete(Signal)
-            result = await self.db.execute(stmt)
-            await self.db.commit()
+            result = await self.db.execute(stmt) if self.db else None
+            if self.db:
+                await self.db.commit()
             deleted_count = result.rowcount
             logger.info(f"Cleared {deleted_count} signals from the database.")
             return deleted_count
