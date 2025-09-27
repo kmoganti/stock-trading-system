@@ -5,6 +5,8 @@ from typing import List, Set
 import httpx
 
 from .watchlist import WatchlistService
+from config.settings import get_settings
+from services.telegram_notifier import TelegramNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +18,8 @@ class ScreenerService:
 
     def __init__(self, watchlist_service: WatchlistService):
         self.watchlist_service = watchlist_service
+        self._settings = get_settings()
+        self._notifier = TelegramNotifier()
 
     async def _fetch_top_gainers_from_api(self) -> List[str]:
         """
@@ -46,6 +50,7 @@ class ScreenerService:
         from multiple screeners.
         """
         logger.info("Starting to build dynamic intraday watchlist...")
+        await self._notifier.send("▶️ Starting day trading screening...")
         try:
             # Fetch symbols from different screeners concurrently
             gainers_task = self._fetch_top_gainers_from_api()

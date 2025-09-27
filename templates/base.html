@@ -108,8 +108,6 @@
                 
                 async init() {
                     await this.fetchStatus();
-                    // Refresh every 30 seconds
-                    setInterval(() => this.fetchStatus(), 30000);
                 },
                 
                 async fetchStatus() {
