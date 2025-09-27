@@ -322,49 +322,27 @@ class DataFetcher:
     
     async def _fetch_and_standardize(self, symbol: str, interval: str, from_date: str, to_date: str) -> Optional[List[Dict]]:
         """Internal helper to fetch data from IIFL, handle fallbacks, and standardize the output."""
-        # First attempt: use symbol as provided
-        result = await self.iifl.get_historical_data(symbol, interval, from_date, to_date)
-        
-        is_successful_response = isinstance(result, dict) and \
-                                 (result.get("status", "").lower() == "ok" or result.get("stat", "").lower() == "ok")
-
-        if is_successful_response and result:
-            # Some responses may use different keys for the candles array
-            raw_list = None
-            for key in ["result", "data", "resultData"]:
-                if isinstance(result.get(key), list):
-                    raw_list = result.get(key)
-                    break
-            standardized_data = self._standardize_historical_payload(raw_list or [])
-            if standardized_data:
-                return standardized_data
-        
-        if result:
-            error_message = result.get('message') or result.get('emsg', 'Unknown API error') if isinstance(result, dict) else 'Unknown API error'
-            logger.info(f"Primary fetch for {symbol} returned no data: {error_message}")
-
-        # Fallback: resolve instrumentId via contracts and retry once
-        resolved_id = await self._resolve_instrument_id(symbol)
-        if resolved_id and str(resolved_id) != str(symbol):
-            logger.info(f"Primary fetch failed for '{symbol}', retrying with resolved instrumentId '{resolved_id}'")
-            result2 = await self.iifl.get_historical_data(str(resolved_id), interval, from_date, to_date)
-            is_successful_response2 = isinstance(result2, dict) and \
-                                      (result2.get("status", "").lower() == "ok" or result2.get("stat", "").lower() == "ok")
-
-            if is_successful_response2 and result2:
-                raw_list2 = None
+        # NOTE: Strict single-call implementation (no fallback logic)
+        try:
+            result = await self.iifl.get_historical_data(symbol, interval, from_date, to_date)
+            is_successful_response = isinstance(result, dict) and (
+                (str(result.get("status", "")).lower() == "ok") or (str(result.get("stat", "")).lower() == "ok")
+            )
+            if is_successful_response and result:
+                raw_list = None
                 for key in ["result", "data", "resultData"]:
-                    if isinstance(result2.get(key), list):
-                        raw_list2 = result2.get(key)
+                    if isinstance(result.get(key), list):
+                        raw_list = result.get(key)
                         break
-                standardized_data = self._standardize_historical_payload(raw_list2 or [])
-                if standardized_data:
-                    return standardized_data
-            elif result2:
-                error_message2 = result2.get('message') or result2.get('emsg', 'Unknown API error') if isinstance(result2, dict) else 'Unknown API error'
-                logger.warning(f"Fallback instrumentId fetch for {symbol} (id={resolved_id}) also failed: {error_message2}")
-        
-        return None
+                return self._standardize_historical_payload(raw_list or [])
+            return None
+        except Exception as e:
+            logger.error(f"Strict fetch failed for {symbol}: {e}")
+            return None
+
+    async def _fetch_once_no_fallback(self, symbol: str, interval: str, from_date: str, to_date: str) -> Optional[List[Dict]]:
+        """Single provider call without any fallback or stale-cache serving."""
+        return await self._fetch_and_standardize(symbol, interval, from_date, to_date)
 
     async def get_historical_data(self, symbol: str, interval: str = "1D", 
                                 days: int = 120, from_date: Optional[str] = None, 
@@ -390,8 +368,8 @@ class DataFetcher:
                     delta_from_date = (last_candle_dt + timedelta(days=1)).strftime("%Y-%m-%d")
                     
                     if to_date > delta_from_date:
-                        logger.info(f"Cache hit for {symbol}. Fetching delta from {delta_from_date} to {to_date}.")
-                        delta_data = await self._fetch_and_standardize(symbol, interval, delta_from_date, to_date)
+                        logger.info(f"Cache hit for {symbol}. Fetching delta (strict) from {delta_from_date} to {to_date}.")
+                        delta_data = await self._fetch_once_no_fallback(symbol, interval, delta_from_date, to_date)
                         
                         if delta_data:
                             # Combine, update file cache, and return
@@ -403,23 +381,83 @@ class DataFetcher:
                     return cached_data
 
             # Perform a full fetch if cache is missing, stale, or delta fetch failed
-            logger.info(f"Performing full historical data fetch for {symbol} from {from_date} to {to_date}.")
-            full_data = await self._fetch_and_standardize(symbol, interval, from_date, to_date)
+            logger.info(f"Performing full historical data fetch (strict) for {symbol} from {from_date} to {to_date}.")
+            full_data = await self._fetch_once_no_fallback(symbol, interval, from_date, to_date)
 
             if full_data:
                 self._write_to_file_cache(file_cache_path, full_data)
                 return full_data
             
-            # If fetch fails, return stale data from cache if available
-            if cached_file_content and cached_file_content.get("data"):
-                logger.warning(f"Full fetch failed for {symbol}, returning stale data from file cache.")
-                return cached_file_content.get("data")
-
             return []
 
         except Exception as e:
             logger.error(f"Error fetching historical data for {symbol}: {str(e)}")
             return []
+
+    async def get_historical_data_many(
+        self,
+        symbols: List[str],
+        interval: str = "1D",
+        days: int = 120,
+        from_date: Optional[str] = None,
+        to_date: Optional[str] = None,
+        max_concurrency: int = 4,
+    ) -> Dict[str, List[Dict]]:
+        """Batch fetch historical OHLCV data with delta-only strict single-call per symbol.
+
+        - Uses file cache per symbol and fetches only missing delta when cache is from today.
+        - No fallback retries and no stale cache return on failures.
+        - Executes remote calls concurrently up to max_concurrency.
+        """
+        if not symbols:
+            return {}
+        if not from_date or not to_date:
+            to_date = datetime.now().strftime("%Y-%m-%d")
+            from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+        results: Dict[str, List[Dict]] = {}
+        tasks: List[Any] = []
+        semaphore = asyncio.Semaphore(max_concurrency)
+
+        async def _process_symbol(sym: str):
+            async with semaphore:
+                try:
+                    file_cache_path = self._get_file_cache_path(sym, interval)
+                    cached_file_content = self._read_from_file_cache(file_cache_path)
+                    if cached_file_content:
+                        last_updated = datetime.fromisoformat(cached_file_content.get("last_updated", "1970-01-01T00:00:00"))
+                        cached_data = cached_file_content.get("data", [])
+                        if last_updated.date() == datetime.now().date() and cached_data:
+                            last_candle_date_str = cached_data[-1].get("date", "1970-01-01")
+                            last_candle_dt = datetime.fromisoformat(last_candle_date_str.split("T")[0])
+                            delta_from_date = (last_candle_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+                            if to_date > delta_from_date:
+                                delta_data = await self._fetch_once_no_fallback(sym, interval, delta_from_date, to_date)
+                                if delta_data:
+                                    combined = cached_data + delta_data
+                                    self._write_to_file_cache(file_cache_path, combined)
+                                    results[sym] = combined
+                                    return
+                            # No delta needed
+                            results[sym] = cached_data
+                            return
+                    # Full strict fetch
+                    full = await self._fetch_once_no_fallback(sym, interval, from_date, to_date)
+                    if full:
+                        self._write_to_file_cache(file_cache_path, full)
+                        results[sym] = full
+                    else:
+                        results[sym] = []
+                except Exception as e:
+                    logger.error(f"Batch fetch error for {sym}: {e}")
+                    results[sym] = []
+
+        for s in symbols:
+            tasks.append(_process_symbol(s))
+
+        if tasks:
+            await asyncio.gather(*tasks)
+        return results
     
     async def get_live_price(self, symbol: str) -> Optional[float]:
         """Get current live price for a symbol"""

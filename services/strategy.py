@@ -529,6 +529,56 @@ class StrategyService:
         except Exception as e:
             logger.error(f"Error generating signals for {symbol}: {str(e)}")
             return []
+
+    async def generate_signals_from_data(
+        self,
+        symbol: str,
+        data: List[Dict],
+        strategy_name: Optional[str] = None,
+        validate: bool = True,
+    ) -> List[TradingSignal]:
+        """Generate signals using pre-fetched historical data (skips any data calls).
+
+        - Expects already normalized list of dicts with at least close/high/low/open/volume/date.
+        - Allows disabling validation to avoid extra live/depth calls when optimizing batch runs.
+        """
+        try:
+            if not data:
+                return []
+
+            if HAS_PANDAS:
+                df = pd.DataFrame(data)
+                indicators = self.calculate_indicators(df)
+            else:
+                indicators = self._calculate_basic_indicators(data)
+
+            signals: List[TradingSignal] = []
+            if HAS_PANDAS and self._strategy_map:
+                strategies_to_run = (
+                    {strategy_name: self._strategy_map[strategy_name]}
+                    if strategy_name and strategy_name in self._strategy_map
+                    else self._strategy_map
+                )
+                for name, func in strategies_to_run.items():
+                    signal = func(indicators, symbol)
+                    if signal:
+                        signals.append(signal)
+            elif not HAS_PANDAS:
+                basic_signal = self._basic_trend_strategy(indicators, symbol)
+                if basic_signal:
+                    signals.append(basic_signal)
+
+            if not validate:
+                return signals
+
+            filtered: List[TradingSignal] = []
+            for sig in signals:
+                if await self._validate_signal(sig, data):
+                    filtered.append(sig)
+            return filtered
+        except Exception as e:
+            logger.error(f"Error generating signals from pre-fetched data for {symbol}: {e}")
+            return []
     
     async def calculate_position_size(self, signal: 'TradingSignal', available_capital: float) -> int:
         """Calculate position size based on risk management"""
