@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     max_daily_loss: float = Field(0.05, env="MAX_DAILY_LOSS")  # 5%
     min_price: float = Field(10.0, env="MIN_PRICE")
     min_liquidity: float = Field(100000.0, env="MIN_LIQUIDITY")
+    # Order product defaults and short selling
+    allow_short_selling: bool = Field(True, env="ALLOW_SHORT_SELLING")
+    default_buy_product: str = Field("NORMAL", env="DEFAULT_BUY_PRODUCT")  # NORMAL or DELIVERY
+    default_sell_product: str = Field("NORMAL", env="DEFAULT_SELL_PRODUCT")  # For sell to exit longs
+    short_sell_product: str = Field("INTRADAY", env="SHORT_SELL_PRODUCT")  # For initiating shorts
+    day_trading_product: str = Field("INTRADAY", env="DAY_TRADING_PRODUCT")
     
     # Telegram Bot
     telegram_bot_token: str = Field(..., env="TELEGRAM_BOT_TOKEN")

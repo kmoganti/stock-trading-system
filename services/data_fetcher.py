@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
+from datetime import date as date_cls
 import logging
 import httpx
 import json
@@ -47,6 +48,9 @@ class DataFetcher:
             # Track when portfolio cache was set; apply a soft TTL to avoid stale emptiness
             self._portfolio_cache_at: Optional[datetime] = None
             self._portfolio_cache_ttl_seconds: int = 60
+            # Daily boundaries for minimal IIFL calls
+            self._portfolio_cache_date: Optional[date_cls] = None
+            self._margin_cache_date: Optional[date_cls] = None
             self._initialized = True
     
     def _is_cache_valid(self, key: str, ttl_seconds: int = 60) -> bool:
@@ -74,6 +78,8 @@ class DataFetcher:
         logger.info("Clearing portfolio and margin cache due to order activity.")
         self._portfolio_cache = None
         self._margin_cache = None
+        self._portfolio_cache_date = None
+        self._margin_cache_date = None
 
     def _get_file_cache_path(self, symbol: str, interval: str) -> str:
         """Get the path for the file-based cache, ensuring the directory exists."""
@@ -605,15 +611,16 @@ class DataFetcher:
         
         return []
 
-    async def get_portfolio_data(self) -> Dict[str, Any]:
+    async def get_portfolio_data(self, force_refresh: bool = False) -> Dict[str, Any]:
         """Get complete portfolio data (holdings + positions)"""
         try:
-            # Serve from cache only if within TTL and we have non-empty holdings/positions
-            if self._portfolio_cache is not None and self._portfolio_cache_at is not None:
-                cache_is_fresh = datetime.now() < (self._portfolio_cache_at + timedelta(seconds=self._portfolio_cache_ttl_seconds))
-                has_meaningful_data = bool(self._portfolio_cache.get("holdings")) or bool(self._portfolio_cache.get("positions"))
-                if cache_is_fresh and has_meaningful_data:
-                    return self._portfolio_cache
+            # Serve from cache if already refreshed today and not forced to refresh
+            today = datetime.now().date()
+            if (not force_refresh and
+                self._portfolio_cache is not None and
+                self._portfolio_cache_date == today and
+                (bool(self._portfolio_cache.get("holdings")) or bool(self._portfolio_cache.get("positions")))):
+                return self._portfolio_cache
 
             # Fetch holdings and positions concurrently
             holdings_task = self.iifl.get_holdings()
@@ -685,6 +692,7 @@ class DataFetcher:
             
             self._portfolio_cache = portfolio_data
             self._portfolio_cache_at = datetime.now()
+            self._portfolio_cache_date = today
             return portfolio_data
             
         except Exception as e:
@@ -699,19 +707,37 @@ class DataFetcher:
             }
     
 
-    async def get_margin_info(self) -> Optional[Dict]:
+    async def get_margin_info(self, force_refresh: bool = False) -> Optional[Dict]:
         """Get margin and limit information"""
         try:
-            if self._margin_cache is not None:
+            today = datetime.now().date()
+            if not force_refresh and self._margin_cache is not None and self._margin_cache_date == today:
                 return self._margin_cache
 
-            # Derive available margin via pre-order margin endpoint with minimal dummy order
+            # Prefer broker-provided limits endpoint once per day
+            try:
+                limits_resp = await self.iifl.get_limits()
+                if isinstance(limits_resp, dict) and ((limits_resp.get("status") or limits_resp.get("stat")) == "Ok"):
+                    result = limits_resp.get("result") or limits_resp.get("resultData") or {}
+                    normalized = {
+                        "availableMargin": float(result.get("availableMargin", result.get("totalCashAvailable", 0.0)) or 0.0),
+                        "usedMargin": float(result.get("usedMargin", 0.0) or 0.0),
+                        "totalEquity": float(result.get("totalEquity", 0.0) or 0.0),
+                        "spanMargin": float(result.get("spanMargin", 0.0) or 0.0),
+                        "exposureMargin": float(result.get("exposureMargin", 0.0) or 0.0),
+                    }
+                    self._margin_cache = normalized
+                    self._margin_cache_date = today
+                    return normalized
+            except Exception as e:
+                logger.warning(f"Limits endpoint failed, will try pre-order margin fallback: {str(e)}")
+
+            # Fallback: derive available margin via pre-order margin endpoint with minimal dummy order
             try:
                 fallback = await self.calculate_required_margin(
                     symbol="1594", quantity=1, transaction_type="BUY", price=None, product="NORMAL", exchange="NSEEQ"
                 )
                 if fallback:
-                    # Normalize to expected keys so UI can read availableMargin/usedMargin
                     derived = {
                         "availableMargin": fallback.get("total_cash_available", 0.0),
                         "usedMargin": fallback.get("current_order_margin", 0.0),
@@ -720,6 +746,7 @@ class DataFetcher:
                         "fundShort": fallback.get("fund_short", 0.0),
                     }
                     self._margin_cache = derived
+                    self._margin_cache_date = today
                     return derived
             except Exception as e:
                 logger.warning(f"Fallback preordermargin failed: {str(e)}")
@@ -732,12 +759,26 @@ class DataFetcher:
     
     async def calculate_required_margin(self, symbol: str, quantity: int, 
                                       transaction_type: str, price: Optional[float] = None,
-                                      product: str = "NORMAL", exchange: str = "NSEEQ",
+                                      product: Optional[str] = None, exchange: str = "NSEEQ",
                                       order_type: Optional[str] = None) -> Optional[Dict]:
         """Calculate required margin for a trade using IIFL preordermargin API"""
         try:
             # Use the provided order_type if available, otherwise infer from the price
             final_order_type = order_type.upper() if order_type else ("LIMIT" if price else "MARKET")
+
+            # Choose sensible default products when not provided
+            chosen_product = product
+            try:
+                if not chosen_product:
+                    from config.settings import get_settings
+                    settings = get_settings()
+                    if transaction_type.upper() == "SELL":
+                        # Without holdings info here, assume short-sell margin calc by default
+                        chosen_product = settings.short_sell_product
+                    else:
+                        chosen_product = settings.default_buy_product
+            except Exception:
+                chosen_product = product or "NORMAL"
 
             order_data = self.iifl.format_order_data(
                 symbol=symbol,
@@ -745,7 +786,7 @@ class DataFetcher:
                 quantity=quantity,
                 order_type=final_order_type,
                 price=price,
-                product=product,
+                product=chosen_product,
                 exchange=exchange
             )
             

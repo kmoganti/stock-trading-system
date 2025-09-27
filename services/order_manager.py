@@ -196,13 +196,29 @@ class OrderManager:
                 logger.info(f"Simulated order execution for signal {signal.id} with id {simulated_order_id}")
                 return True
 
+            # Decide product based on signal type (short selling uses INTRADAY)
+            tx_type = signal.signal_type.value
+            if tx_type == "sell":
+                # If we are already holding the stock (long), normal sell; otherwise short sell product
+                # Lightweight check using cached portfolio (no forced refresh here)
+                portfolio = await self.data_fetcher.get_portfolio_data()
+                holdings = {h.get("symbol"): h.get("quantity", 0) for h in portfolio.get("holdings", [])}
+                product = (
+                    self.settings.default_sell_product
+                    if holdings.get(signal.symbol, 0) > 0
+                    else self.settings.short_sell_product
+                )
+            else:
+                product = self.settings.default_buy_product
+
             # Prepare order data
             order_data = self.iifl.format_order_data(
                 symbol=signal.symbol,
-                transaction_type=signal.signal_type.value,
+                transaction_type=tx_type,
                 quantity=signal.quantity or 1,
-                order_type="MARKET",  # Use market orders for simplicity
+                order_type="MARKET",
                 price=signal.price,
+                product=product,
                 stop_loss=signal.stop_loss,
                 take_profit=signal.take_profit
             )
@@ -228,6 +244,12 @@ class OrderManager:
                         "order_time": datetime.now()
                     }
                     
+                    # After a successful order, refresh caches once to reflect latest positions/margin
+                    try:
+                        await self.data_fetcher.get_portfolio_data(force_refresh=True)
+                        await self.data_fetcher.get_margin_info(force_refresh=True)
+                    except Exception:
+                        pass
                     logger.info(f"Order executed: {order_id} for signal {signal.id}")
                     return True
                 else:
@@ -307,9 +329,14 @@ class OrderManager:
                     iifl_order = iifl_orders[order_id]
                     order_status = iifl_order.get("orderStatus", "").upper()
                     
-                    # If order is filled, remove from pending
+                    # If order is filled, remove from pending and refresh caches once
                     if order_status in ["FILLED", "COMPLETE"]:
                         logger.info(f"Order {order_id} filled")
+                        try:
+                            await self.data_fetcher.get_portfolio_data(force_refresh=True)
+                            await self.data_fetcher.get_margin_info(force_refresh=True)
+                        except Exception:
+                            pass
                         del self.pending_orders[order_id]
                     
                     # If order is cancelled or rejected
