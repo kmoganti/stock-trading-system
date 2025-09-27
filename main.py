@@ -30,6 +30,7 @@ from services.screener import ScreenerService
 from services.watchlist import WatchlistService
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+from services.data_fetcher import DataFetcher
 
 # Ensure logs directory exists
 os.makedirs('logs', exist_ok=True)
@@ -108,6 +109,16 @@ async def lifespan(app: FastAPI):
             logger.warning("Could not start market stream: IIFL authentication failed or using mock token.")
     except Exception as e:
         logger.error(f"Failed to start market data stream: {e}", exc_info=True)
+    
+    # One-time daily refresh of portfolio and margin caches at startup to avoid repeated calls
+    try:
+        iifl_for_cache = IIFLAPIService()
+        fetcher_for_cache = DataFetcher(iifl_for_cache)
+        await fetcher_for_cache.get_portfolio_data(force_refresh=True)
+        await fetcher_for_cache.get_margin_info(force_refresh=True)
+        logger.info("Startup portfolio and margin caches warmed up.")
+    except Exception as e:
+        logger.warning(f"Failed startup cache warmup: {str(e)}")
     
     # Schedule daily housekeeping (log pruning) at 00:30
     # try:
