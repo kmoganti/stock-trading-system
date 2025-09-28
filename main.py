@@ -73,6 +73,13 @@ async def lifespan(app: FastAPI):
     trading_logger.log_system_event("application_startup", {"version": "1.0.0"})
     trading_logger.log_system_event("database_initialized")
     app.state.market_stream_service = None
+    # Ensure DB schema compatibility for legacy/local SQLite files used in tests
+    try:
+        from models.database import ensure_pnl_columns, engine
+        # ensure_pnl_columns is async in our DB module
+        await ensure_pnl_columns(engine)
+    except Exception:
+        logger.exception("Failed to ensure pnl columns at startup")
     
     # Start Telegram bot if configured
     app.state.telegram_bot = None

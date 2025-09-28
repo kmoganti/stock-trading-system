@@ -47,3 +47,23 @@ class Setting(Base):
         
         # Return as string
         return self.value
+
+
+from dataclasses import dataclass
+
+
+@dataclass
+class Settings:
+    """Lightweight settings object used by tests and simple parts of the app.
+
+    This is intentionally minimal and independent from the SQLAlchemy `Setting`
+    model above. It provides defaults used in the test-suite.
+    """
+    auto_trade: bool = False
+    risk_per_trade: float = 0.02
+    max_positions: int = 10
+    max_daily_loss: float = 0.05
+    signal_timeout: int = 300
+    min_price: float = 10.0
+    min_liquidity: int = 100000
+    environment: str = "development"

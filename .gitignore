@@ -46,3 +46,9 @@ reports/
 # Ignore the data folder but keep the nifty 100 list
 data/*
 !data/ind_nifty100list.csv
+# Local SQLite DB and cache artifacts
+trading_system.db
+*.db
+data/hist_cache/*.parquet
+data/hist_cache/*.parquet.*
+data/hist_cache/*.db

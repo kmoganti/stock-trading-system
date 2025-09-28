@@ -18,6 +18,11 @@ class PnLReport(Base):
     total_trades = Column(Integer, nullable=False, default=0)
     winning_trades = Column(Integer, nullable=False, default=0)
     losing_trades = Column(Integer, nullable=False, default=0)
+    # Compatibility fields expected by tests
+    total_pnl = Column(Float, nullable=False, default=0.0)
+    fees = Column(Float, nullable=False, default=0.0)
+    trades_count = Column(Integer, nullable=False, default=0)
+    win_rate = Column(Float, nullable=False, default=0.0)
     
     # Portfolio metrics
     starting_equity = Column(Float, nullable=True)

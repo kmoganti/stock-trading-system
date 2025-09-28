@@ -5,6 +5,7 @@ import enum
 from typing import Dict, Any, Optional
 
 class RiskEventType(str, enum.Enum):
+    # Existing event types
     DAILY_LOSS_HALT = "daily_loss_halt"
     DRAWDOWN_HALT = "drawdown_halt"
     MARGIN_INSUFFICIENT = "margin_insufficient"
@@ -13,6 +14,10 @@ class RiskEventType(str, enum.Enum):
     SYSTEM_ERROR = "system_error"
     MANUAL_HALT = "manual_halt"
     STRATEGY_ERROR = "strategy_error"
+    # Additional types expected by tests
+    DAILY_LOSS_LIMIT_EXCEEDED = "daily_loss_limit_exceeded"
+    STOP_LOSS_TRIGGERED = "stop_loss_triggered"
+    MARGIN_CALL = "margin_call"
 
 class RiskEvent(Base):
     __tablename__ = "risk_events"
@@ -20,8 +25,11 @@ class RiskEvent(Base):
     id = Column(Integer, primary_key=True, index=True)
     timestamp = Column(DateTime, nullable=False, default=func.now(), index=True)
     event_type = Column(Enum(RiskEventType), nullable=False, index=True)
-    message = Column(Text, nullable=False)
+    # Keep `message` for backward compatibility but expose `description` and `data`
+    message = Column(Text, nullable=True)
+    description = Column(Text, nullable=True)
     meta = Column(JSON, nullable=True)
+    data = Column(JSON, nullable=True)
     
     # Additional context
     symbol = Column(String(20), nullable=True)
