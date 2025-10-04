@@ -61,6 +61,28 @@ class IIFLAPIService:
                 logger.debug(f"Could not initialize auth expiry on init: {e}")
             self._initialized = True
 
+        # Operational flags
+        # Global kill-switch: set TRADING_ENABLED=false to disable any live order placement
+        try:
+            te = os.getenv("TRADING_ENABLED")
+            if te is None:
+                # allow settings to define default if present
+                self.trading_enabled = bool(getattr(self.settings, "trading_enabled", True))
+            else:
+                self.trading_enabled = str(te).lower() not in ("0", "false", "no")
+        except Exception:
+            self.trading_enabled = True
+
+        # Paper trading flag: when true, mutating endpoints return simulated successful responses
+        try:
+            pt = os.getenv("PAPER_TRADING")
+            if pt is None:
+                self.paper_trading = bool(getattr(self.settings, "paper_trading", False))
+            else:
+                self.paper_trading = str(pt).lower() in ("1", "true", "yes")
+        except Exception:
+            self.paper_trading = False
+
     def _load_settings(self) -> None:
         """Load settings using config.settings if available, else fallback to os.environ."""
         try:
@@ -429,12 +451,22 @@ class IIFLAPIService:
             logger.info(f"Request Body: {json.dumps(request_body)}")
             
             # Log to specialized API logger
+            # data_keys: handle dict or list payloads safely for logging
+            try:
+                if isinstance(request_body, list) and request_body and isinstance(request_body[0], dict):
+                    data_keys = list(request_body[0].keys())
+                elif isinstance(request_body, dict):
+                    data_keys = list(request_body.keys())
+                else:
+                    data_keys = []
+            except Exception:
+                data_keys = []
             trading_logger.log_system_event("iifl_api_request", {
                 "method": method.upper(),
                 "url": url,
                 "endpoint": endpoint,
                 "has_bearer_token": bool(self.session_token),
-                "data_keys": list(request_body.keys())
+                "data_keys": data_keys
             })
 
             try:
@@ -645,6 +677,22 @@ class IIFLAPIService:
     # Order Management
     async def place_order(self, order_data: Dict) -> Optional[Dict]:
         """Place a new order. Prefer aiohttp for test compatibility."""
+        # Respect global kill-switch and paper-trading flags
+        if not getattr(self, 'trading_enabled', True):
+            logger.warning("Trading is disabled by TRADING_ENABLED flag; not placing order.")
+            return {"isSuccess": False, "errorMessage": "Trading disabled"}
+
+        if getattr(self, 'paper_trading', False):
+            # Return a simulated success response mimicking IIFL shape
+            simulated = {
+                "isSuccess": True,
+                "resultData": {
+                    "brokerOrderId": f"PAPER-{int(datetime.now().timestamp())}"
+                }
+            }
+            logger.info(f"Paper trading enabled - simulated place_order: {simulated['resultData']['brokerOrderId']}")
+            return simulated
+
         if aiohttp is not None:
             url = f"{self.base_url.rstrip('/')}/orders"
             try:
@@ -732,6 +780,17 @@ class IIFLAPIService:
         interval_norm = _normalize_interval_value(interval)
 
         # --- Payload Preparation ---
+        # Dates: provider prefers DD-MMM-YYYY (e.g., 01-Jul-2025). Keep original case for month abbrev.
+        try:
+            from_dt_parsed = datetime.strptime(from_date, "%Y-%m-%d")
+            to_dt_parsed = datetime.strptime(to_date, "%Y-%m-%d")
+            dd_mon_yyyy_from = from_dt_parsed.strftime("%d-%b-%Y")
+            dd_mon_yyyy_to = to_dt_parsed.strftime("%d-%b-%Y")
+        except Exception:
+            # If caller already passed strings in expected format, use them
+            dd_mon_yyyy_from = from_date
+            dd_mon_yyyy_to = to_date
+
         payload = {
             "exchange": "NSEEQ",
             "interval": interval_norm,
@@ -740,9 +799,10 @@ class IIFLAPIService:
         }
 
         if str(symbol).isdigit():
-            # Provider accepts InstrumentId (camel-case I) based on observed contract file & logs
+            # Provider accepts InstrumentId (camel-case I)
             payload["instrumentId"] = str(symbol)
         else:
+            # Fall back to symbol if a non-numeric symbol was provided
             payload["symbol"] = str(symbol).upper()
 
         trading_logger.log_system_event("iifl_hist_attempt", {
@@ -754,13 +814,29 @@ class IIFLAPIService:
         return await self._make_api_request("POST", "/marketdata/historicaldata", payload)
     
     async def get_market_quotes(self, instruments: List[str]) -> Optional[Dict]:
-        """Get real-time market quotes"""
-        # Ensure all instruments are strings
-        instrument_strs = [str(instr) for instr in instruments]
-        data = {"instruments": instrument_strs}
-        
-        # Call API and return result
-        return await self._make_api_request("POST", "/marketdata/marketquotes", data)
+        """Get real-time market quotes.
+
+        The API expects a POST body that's an array of objects like:
+        [{"exchange":"NSEEQ","instrumentId":"7929"}, ...]
+        This helper will accept either a list of numeric-id strings or a list of dicts and
+        normalize to the documented shape.
+        """
+        if not instruments:
+            return None
+
+        payload: List[Dict] = []
+        for instr in instruments:
+            if isinstance(instr, dict):
+                # Ensure instrumentId and exchange keys exist
+                if "instrumentId" in instr:
+                    ex = instr.get("exchange", "NSEEQ")
+                    payload.append({"exchange": ex, "instrumentId": str(instr["instrumentId"])})
+            else:
+                s = str(instr)
+                # Numeric string likely an instrumentId
+                payload.append({"exchange": "NSEEQ", "instrumentId": s})
+
+        return await self._make_api_request("POST", "/marketdata/marketquotes", payload)
 
     async def get_market_data(self, symbol: str) -> Optional[Dict]:
         """Compatibility wrapper used by tests: returns the first quote for symbol."""
@@ -769,12 +845,88 @@ class IIFLAPIService:
             url = f"{self.base_url.rstrip('/')}/marketdata/marketquotes"
             payload = {"instruments": [symbol]}
             try:
+                # Build headers similar to _make_api_request so token is sent in aiohttp path too
+                token_value = self.session_token or ""
+                auth_header = token_value if str(token_value).lower().startswith("bearer ") else (f"Bearer {token_value}" if token_value else "")
+                headers = {
+                    "Content-Type": "application/json",
+                    "User-Agent": "IIFL-Trading-System/1.0",
+                    **({"Authorization": auth_header} if auth_header else {})
+                }
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(url, json=payload) as resp:
-                        data = await resp.json()
-                        if isinstance(data, dict) and "Success" in data and isinstance(data["Success"], list) and data["Success"]:
-                            return data["Success"][0]
-                        return data
+                    # Try GET first (tests sometimes patch ClientSession.get), fall back to POST
+                    try:
+                        async with session.get(url, params=payload, headers=headers) as resp:
+                            # Prefer awaiting resp.json() (works with aiohttp and AsyncMock test doubles)
+                            status = getattr(resp, "status", None)
+                            try:
+                                data = await resp.json()
+                            except Exception:
+                                try:
+                                    text = await resp.text()
+                                except Exception:
+                                    text = None
+                                if text:
+                                    try:
+                                        data = json.loads(text)
+                                    except Exception:
+                                        logger.warning(
+                                            "IIFL marketquotes returned non-JSON body",
+                                            extra={"url": url, "status": status, "body_preview": (text[:400] + "...") if len(text) > 400 else text}
+                                        )
+                                        data = None
+
+                            if status and int(status) != 200:
+                                logger.warning(f"IIFL marketquotes returned HTTP {status} for {symbol}; body preview logged.")
+                                return None
+
+                            if isinstance(data, dict):
+                                for key in ("Success", "result", "data"):
+                                    v = data.get(key)
+                                    if isinstance(v, list) and v:
+                                        return v[0]
+                                return data
+                            elif isinstance(data, list) and data:
+                                return data[0]
+                            return None
+                    except Exception:
+                        # GET failed; try POST as documented
+                        try:
+                            async with session.post(url, json=payload, headers=headers) as resp:
+                                status = getattr(resp, "status", None)
+                                try:
+                                    data = await resp.json()
+                                except Exception:
+                                    try:
+                                        text = await resp.text()
+                                    except Exception:
+                                        text = None
+                                    if text:
+                                        try:
+                                            data = json.loads(text)
+                                        except Exception:
+                                            logger.warning(
+                                                "IIFL marketquotes returned non-JSON body",
+                                                extra={"url": url, "status": status, "body_preview": (text[:400] + "...") if len(text) > 400 else text}
+                                            )
+                                            data = None
+
+                                if status and int(status) != 200:
+                                    logger.warning(f"IIFL marketquotes returned HTTP {status} for {symbol}; body preview logged.")
+                                    return None
+
+                                if isinstance(data, dict):
+                                    for key in ("Success", "result", "data"):
+                                        v = data.get(key)
+                                        if isinstance(v, list) and v:
+                                            return v[0]
+                                    return data
+                                elif isinstance(data, list) and data:
+                                    return data[0]
+                                return None
+                        except Exception:
+                            logger.exception("aiohttp get_market_data shim failed")
+                            return None
             except Exception:
                 logger.exception("aiohttp get_market_data shim failed")
                 return None

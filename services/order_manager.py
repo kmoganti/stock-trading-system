@@ -187,8 +187,30 @@ class OrderManager:
     async def _execute_signal(self, signal: Signal) -> bool:
         """Execute a trading signal by placing order with IIFL"""
         try:
+            # Global kill-switch and paper-trading handling
+            trading_enabled = os.getenv('TRADING_ENABLED')
+            if trading_enabled is None:
+                trading_enabled = getattr(self.settings, "trading_enabled", True)
+            else:
+                trading_enabled = str(trading_enabled).lower() not in ("0", "false", "no")
+
+            paper_mode = os.getenv('PAPER_TRADING')
+            if paper_mode is None:
+                paper_mode = getattr(self.settings, "paper_trading", False)
+            else:
+                paper_mode = str(paper_mode).lower() in ("1", "true", "yes")
+
+            # Respect kill-switch
+            if not trading_enabled:
+                logger.warning("Trading is disabled by TRADING_ENABLED flag; simulating order as failed.")
+                signal.status = SignalStatus.FAILED
+                signal.extras = signal.extras or {}
+                signal.extras['error_message'] = 'Trading disabled'
+                await self.db.commit()
+                return False
+
             # In dry-run or non-production, simulate order execution without hitting broker API
-            if getattr(self.settings, "dry_run", False) or self.settings.environment != "production":
+            if getattr(self.settings, "dry_run", False) or self.settings.environment != "production" or paper_mode:
                 simulated_order_id = f"DRYRUN-{int(datetime.now().timestamp())}-{signal.id}"
                 signal.status = SignalStatus.EXECUTED
                 signal.executed_at = datetime.now()
@@ -424,6 +446,8 @@ class OrderManager:
             # If underlying IIFL mock exists, prefer calling it
             try:
                 if self.iifl and hasattr(self.iifl, 'place_order'):
+                    # If the IIFL service itself has paper_trading or trading_enabled flags,
+                    # it will respect them; otherwise fall back to local simulation.
                     order_data = {
                         'symbol': temp.symbol,
                         'quantity': temp.quantity,

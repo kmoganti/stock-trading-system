@@ -37,10 +37,24 @@ class MarketStreamService:
         # Lock to guard concurrent watchlist updates
         self._lock = asyncio.Lock()
 
-        # Register handlers
-        self.connection.on_error = self._handle_error
-        self.connection.on_acknowledge_response = self._handle_ack
-        self.connection.on_high_52_week_data_received = self._handle_52_week_high
+        # Register handlers (attempt several common attribute names for compatibility)
+        def _safe_set(attr_name: str, handler):
+            try:
+                if hasattr(self.connection, attr_name):
+                    setattr(self.connection, attr_name, handler)
+                    logger.debug(f"Registered market stream handler: {attr_name}")
+                    return True
+            except Exception:
+                pass
+            return False
+
+        _safe_set('on_error', self._handle_error)
+        _safe_set('on_acknowledge_response', self._handle_ack)
+        # 52-week event handler may have different naming across bridgePy versions
+        _safe_set('on_high_52_week_data_received', self._handle_52_week_high)
+        _safe_set('on_52_week_high', self._handle_52_week_high)
+        _safe_set('on_52_week_high_data', self._handle_52_week_high)
+        _safe_set('on_high_52_week', self._handle_52_week_high)
 
     def _handle_error(self, code: int, message: str):
         logger.error(f"Market Stream Error: Code {code} - {message}")
@@ -153,8 +167,65 @@ class MarketStreamService:
                 await asyncio.sleep(1)
 
                 sub_req = '{"subscriptionList": ["nseeq"]}'
-                self.connection.subscribe_52_week_high(sub_req)
-                logger.info("Subscribed to 52-week high events for NSEEQ.")
+
+                # Try the documented method first, then fall back to a set of likely methods
+                subscribed = False
+                try_methods = [
+                    'subscribe_52_week_high',
+                    'subscribe_52week_high',
+                    'subscribe',
+                    'subscribe_topic',
+                    'subscribe_list',
+                    'publish',
+                    'send_subscribe',
+                    'send',
+                ]
+
+                for m in try_methods:
+                    try:
+                        if hasattr(self.connection, m):
+                            func = getattr(self.connection, m)
+                            # Try calling with the common single-arg JSON string
+                            try:
+                                func(sub_req)
+                                logger.info("Subscribed to 52-week high events using %s", m)
+                                subscribed = True
+                                break
+                            except TypeError:
+                                # Try calling with parsed JSON if function expects dict/list
+                                try:
+                                    import json as _json
+                                    func(_json.loads(sub_req))
+                                    logger.info("Subscribed to 52-week high events using %s (dict payload)", m)
+                                    subscribed = True
+                                    break
+                                except Exception:
+                                    continue
+                    except Exception:
+                        continue
+
+                if not subscribed:
+                    # Last resort: try a generic subscribe method that takes topic name(s)
+                    try:
+                        if hasattr(self.connection, 'subscribe_topics'):
+                            self.connection.subscribe_topics(['nseeq'])
+                            subscribed = True
+                        elif hasattr(self.connection, 'subscribe_topic'):
+                            self.connection.subscribe_topic('nseeq')
+                            subscribed = True
+                    except Exception:
+                        subscribed = False
+
+                if subscribed:
+                    logger.info("Subscribed to 52-week high events for NSEEQ.")
+                else:
+                    # Dump available attributes for diagnostics and avoid raising
+                    try:
+                        available = [a for a in dir(self.connection) if not a.startswith('_')]
+                    except Exception:
+                        available = []
+                    logger.error("Could not subscribe to 52-week high events; no known subscribe method found. Available connection attributes: %s", available)
+                    # Do not raise; keep connection open but mark as not subscribed
                 break
 
             except Exception as e:

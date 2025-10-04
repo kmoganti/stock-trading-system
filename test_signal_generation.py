@@ -191,6 +191,23 @@ async def _resilient_fetch_hist_df(data_fetcher: DataFetcher, symbol: str, from_
             if direct_df is not None and not direct_df.empty:
                 return direct_df
 
+    # 2b) If we didn't have holdings_map or instrument id from it, try resolving via DataFetcher contract map
+    try:
+        if not instrument_id:
+            resolved = await data_fetcher._resolve_instrument_id(symbol)
+            if resolved:
+                df_resolved = await data_fetcher.get_historical_data_df(
+                    str(resolved), "1D", from_dt.strftime("%Y-%m-%d"), to_date.strftime("%Y-%m-%d")
+                )
+                if df_resolved is not None and not df_resolved.empty:
+                    return df_resolved
+                if auth_token:
+                    direct_df = _direct_fetch_to_df(auth_token, str(resolved), from_dt, to_dt)
+                    if direct_df is not None and not direct_df.empty:
+                        return direct_df
+    except Exception:
+        pass
+
     # 4) As a last fallback, try low-level list and convert if pandas exists
     try:
         raw = await data_fetcher.get_historical_data(

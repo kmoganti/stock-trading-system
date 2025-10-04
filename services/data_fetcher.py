@@ -324,28 +324,67 @@ class DataFetcher:
     
     async def _fetch_and_standardize(self, symbol: str, interval: str, from_date: str, to_date: str) -> Optional[List[Dict]]:
         """Internal helper to fetch data from IIFL, handle fallbacks, and standardize the output."""
-        # NOTE: Strict single-call implementation (no fallback logic)
+        # Try primary single-call implementation, then fallback to instrumentId-based retries
         try:
             result = await self.iifl.get_historical_data(symbol, interval, from_date, to_date)
+            logger.debug(f"Historical raw result for {symbol}: {result}")
+
             # If the mock returns a plain list of records, standardize directly
             if isinstance(result, list):
                 return self._standardize_historical_payload(result)
 
+            # Helper to extract list from common keys
+            def _extract_list_from_response(obj: Any) -> Optional[List[Dict]]:
+                if not isinstance(obj, dict):
+                    return None
+                for key in ("result", "data", "resultData", "candles"):
+                    v = obj.get(key)
+                    if isinstance(v, list):
+                        return v
+                # Last resort: find any list value
+                for v in obj.values():
+                    if isinstance(v, list):
+                        return v
+                return None
+
+            # Consider responses with explicit status fields
             is_successful_response = isinstance(result, dict) and (
                 (str(result.get("status", "")).lower() == "ok") or (str(result.get("stat", "")).lower() == "ok")
             )
+
             if is_successful_response and result:
-                raw_list = None
-                for key in ["result", "data", "resultData"]:
-                    if isinstance(result.get(key), list):
-                        raw_list = result.get(key)
-                        break
+                raw_list = _extract_list_from_response(result)
                 return self._standardize_historical_payload(raw_list or [])
-            # In some cases result may be a dict containing direct list under unknown key; try to find any list
+
+            # If provider returned a dict but not 'Ok', try to extract any list and return it
             if isinstance(result, dict):
-                for v in result.values():
-                    if isinstance(v, list):
-                        return self._standardize_historical_payload(v)
+                raw = _extract_list_from_response(result)
+                if raw:
+                    return self._standardize_historical_payload(raw)
+
+            # At this point primary attempt failed or returned empty. Try resolving instrumentId and retry.
+            try:
+                resolved_id = await self._resolve_instrument_id(symbol)
+            except Exception as e:
+                logger.debug(f"Instrument id resolution failed for {symbol}: {e}")
+                resolved_id = None
+
+            if resolved_id and str(resolved_id) != str(symbol):
+                logger.info(f"Primary historical fetch empty for {symbol}; retrying with instrumentId={resolved_id}")
+                try:
+                    retry_result = await self.iifl.get_historical_data(str(resolved_id), interval, from_date, to_date)
+                    logger.debug(f"Historical retry raw result for {symbol} (id={resolved_id}): {retry_result}")
+                    if isinstance(retry_result, list):
+                        return self._standardize_historical_payload(retry_result)
+                    if isinstance(retry_result, dict):
+                        raw_list = _extract_list_from_response(retry_result)
+                        if raw_list:
+                            return self._standardize_historical_payload(raw_list)
+                except Exception as e:
+                    logger.warning(f"Retry with instrumentId {resolved_id} failed for {symbol}: {e}")
+
+            # Nothing found after fallback
+            logger.info(f"Historical data not available for {symbol} (primary and instrumentId fallback both failed)")
             return None
         except Exception as e:
             logger.error(f"Strict fetch failed for {symbol}: {e}")
@@ -509,20 +548,34 @@ class DataFetcher:
                 return self.cache[cache_key]
             # Try common method names used by different IIFL service implementations/mocks
             result = None
+            # First try the direct get_market_data path (tests often patch this or expect exceptions)
             if hasattr(self.iifl, 'get_market_data'):
                 try:
                     result = await self.iifl.get_market_data(symbol)
                 except Exception:
                     # Propagate upstream exceptions to callers/tests that expect errors
                     raise
-            elif hasattr(self.iifl, 'get_market_quotes'):
+            else:
+                # Prefer instrumentId-based marketquotes per docs to avoid missing-symbol shapes
+                resolved_id = None
                 try:
-                    result = await self.iifl.get_market_quotes([symbol])
+                    resolved_id = await self._resolve_instrument_id(symbol)
                 except Exception:
+                    resolved_id = None
+
+                if resolved_id:
                     try:
-                        result = await self.iifl.get_market_quotes(symbol)
+                        result = await self.iifl.get_market_quotes([str(resolved_id)])
                     except Exception:
                         result = None
+                elif hasattr(self.iifl, 'get_market_quotes'):
+                    try:
+                        result = await self.iifl.get_market_quotes([symbol])
+                    except Exception:
+                        try:
+                            result = await self.iifl.get_market_quotes(symbol)
+                        except Exception:
+                            result = None
 
             # Support multiple response shapes from IIFL or test mocks
             if isinstance(result, dict):
@@ -561,18 +614,36 @@ class DataFetcher:
     async def get_multiple_prices(self, symbols: List[str]) -> Dict[str, float]:
         """Get live prices for multiple symbols"""
         try:
-            result = await self.iifl.get_market_quotes(symbols)
+            # Resolve instrumentIds for provided symbols where possible to construct documented payload
+            payload = []
+            for s in symbols:
+                try:
+                    rid = await self._resolve_instrument_id(s)
+                except Exception:
+                    rid = None
+                if rid:
+                    payload.append({"exchange": "NSEEQ", "instrumentId": str(rid)})
+                else:
+                    # fallback to symbol string
+                    payload.append({"exchange": "NSEEQ", "instrumentId": str(s)})
+
+            result = await self.iifl.get_market_quotes(payload)
             prices = {}
             
-            if result and result.get("status") == "Ok":
-                quotes = result.get("resultData", [])
+            if result and isinstance(result, dict) and (result.get("status") == "Ok" or result.get("stat") == "Ok"):
+                # Support both result/resultData/data keys
+                quotes = result.get("resultData") or result.get("result") or result.get("data") or []
                 for quote in quotes:
-                    symbol = quote.get("symbol")
-                    ltp = quote.get("ltp")
-                    if symbol and ltp:
-                        prices[symbol] = float(ltp)
-                        # Cache individual prices
-                        self._set_cache(f"price_{symbol}", float(ltp), 5)
+                    # Try to find a symbol key; fall back to instrumentId
+                    symbol = quote.get("symbol") or quote.get("tradingSymbol") or quote.get("instrument") or quote.get("instrumentId")
+                    ltp = quote.get("ltp") or quote.get("LastTradedPrice") or quote.get("lastPrice")
+                    if symbol and ltp is not None:
+                        try:
+                            prices[str(symbol)] = float(ltp)
+                            # Cache individual prices
+                            self._set_cache(f"price_{symbol}", float(ltp), 5)
+                        except Exception:
+                            continue
             elif result:
                 logger.warning(f"Failed to fetch multiple prices: {result.get('emsg', 'Unknown API error')}")
             
