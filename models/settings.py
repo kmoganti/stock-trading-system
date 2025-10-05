@@ -2,6 +2,7 @@ from sqlalchemy import Column, String, Text, DateTime
 from sqlalchemy.sql import func
 from .database import Base
 from typing import Dict, Any, Union
+from dataclasses import dataclass
 
 class Setting(Base):
     __tablename__ = "settings"
@@ -47,3 +48,16 @@ class Setting(Base):
         
         # Return as string
         return self.value
+
+
+# Lightweight configuration model for tests and internal usage
+@dataclass
+class Settings:
+    auto_trade: bool = False
+    risk_per_trade: float = 0.02
+    max_positions: int = 10
+    max_daily_loss: float = 0.05
+    signal_timeout: int = 300
+    min_price: float = 10.0
+    min_liquidity: int = 100000
+    environment: str = "development"

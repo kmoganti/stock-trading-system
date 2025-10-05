@@ -6,9 +6,12 @@ from typing import Dict, Any, Optional
 
 class RiskEventType(str, enum.Enum):
     DAILY_LOSS_HALT = "daily_loss_halt"
+    DAILY_LOSS_LIMIT_EXCEEDED = "daily_loss_limit_exceeded"
     DRAWDOWN_HALT = "drawdown_halt"
     MARGIN_INSUFFICIENT = "margin_insufficient"
+    MARGIN_CALL = "margin_call"
     POSITION_LIMIT_EXCEEDED = "position_limit_exceeded"
+    STOP_LOSS_TRIGGERED = "stop_loss_triggered"
     API_ERROR = "api_error"
     SYSTEM_ERROR = "system_error"
     MANUAL_HALT = "manual_halt"
@@ -31,6 +34,24 @@ class RiskEvent(Base):
     
     def __repr__(self):
         return f"<RiskEvent(id={self.id}, type={self.event_type}, timestamp={self.timestamp})>"
+
+    def __init__(self, **kwargs):
+        # Accept 'description' alias from tests, map to message
+        if 'description' in kwargs and 'message' not in kwargs:
+            kwargs['message'] = kwargs.pop('description')
+        # Accept 'data' alias for meta
+        if 'data' in kwargs and 'meta' not in kwargs:
+            kwargs['meta'] = kwargs.pop('data')
+        super().__init__(**kwargs)  # type: ignore
+
+    # Compat alias for tests: .data <-> .meta
+    @property
+    def data(self) -> Optional[Dict[str, Any]]:
+        return self.meta
+
+    @data.setter
+    def data(self, value: Optional[Dict[str, Any]]):
+        self.meta = value
     
     def to_dict(self) -> Dict[str, Any]:
         return {

@@ -46,7 +46,10 @@ async def get_system_status(db: AsyncSession = Depends(get_db)) -> Dict[str, Any
             "max_daily_loss": settings.max_daily_loss,
             "timestamp": datetime.now().isoformat()
         }
-        
+        # If disabled via feature flag, skip expensive connectivity checks
+        if not getattr(settings, "enable_system_status_checks", False):
+            return status
+
         # Try to check IIFL API connectivity
         try:
             async with IIFLAPIService() as iifl:

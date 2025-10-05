@@ -164,8 +164,6 @@ document.addEventListener('alpine:init', () => {
         async init() {
             await this.loadDashboardData();
             await this.initEquityChart();
-            // Refresh every 30 seconds
-            setInterval(() => this.loadDashboardData(), 30000);
         },
         
         async loadDashboardData() {

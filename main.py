@@ -30,6 +30,7 @@ from services.screener import ScreenerService
 from services.watchlist import WatchlistService
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+from services.data_fetcher import DataFetcher
 
 # Ensure logs directory exists
 os.makedirs('logs', exist_ok=True)
@@ -74,19 +75,20 @@ async def lifespan(app: FastAPI):
     trading_logger.log_system_event("database_initialized")
     app.state.market_stream_service = None
     
-    # Start Telegram bot if configured
+    # Start Telegram bot if configured (disabled by default unless explicitly enabled)
     app.state.telegram_bot = None
     try:
         telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
         telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        if telegram_token and telegram_chat_id:
+        settings_for_telegram = get_settings()
+        if telegram_token and telegram_chat_id and getattr(settings_for_telegram, "telegram_bot_enabled", False):
             bot = TelegramBot()
             await setup_handlers(bot)
             await bot.start()
             app.state.telegram_bot = bot
             logger.info("Telegram bot started")
         else:
-            logger.warning("Telegram bot not started: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set")
+            logger.warning("Telegram bot not started: disabled or missing TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID")
     except Exception as e:
         logger.error(f"Failed to start Telegram bot: {str(e)}")
 
@@ -108,6 +110,16 @@ async def lifespan(app: FastAPI):
             logger.warning("Could not start market stream: IIFL authentication failed or using mock token.")
     except Exception as e:
         logger.error(f"Failed to start market data stream: {e}", exc_info=True)
+    
+    # One-time daily refresh of portfolio and margin caches at startup to avoid repeated calls
+    try:
+        iifl_for_cache = IIFLAPIService()
+        fetcher_for_cache = DataFetcher(iifl_for_cache)
+        await fetcher_for_cache.get_portfolio_data(force_refresh=True)
+        await fetcher_for_cache.get_margin_info(force_refresh=True)
+        logger.info("Startup portfolio and margin caches warmed up.")
+    except Exception as e:
+        logger.warning(f"Failed startup cache warmup: {str(e)}")
     
     # Schedule daily housekeeping (log pruning) at 00:30
     # try:
@@ -301,11 +313,15 @@ async def auth_management_page(request: Request):
     """IIFL Authentication management page"""
     return templates.TemplateResponse("auth_management.html", {"request": request})
 
-
 @app.get("/guide")
-async def guide_page(request: Request):
-    """Simple guide/help page"""
-    return templates.TemplateResponse("guide.html", {"request": request})
+async def user_guide_page(request: Request):
+    """Static user guide documentation page"""
+    # Serve the more comprehensive user guide template; keep the older
+    # guide.html present for compatibility but prefer user_guide.html.
+    try:
+        return templates.TemplateResponse("user_guide.html", {"request": request})
+    except Exception:
+        return templates.TemplateResponse("guide.html", {"request": request})
 
 if __name__ == "__main__":
     settings = get_settings()
