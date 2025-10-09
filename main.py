@@ -122,42 +122,50 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Failed startup cache warmup: {str(e)}")
     
     # Schedule daily housekeeping (log pruning) at 00:30
-    # try:
-    #     scheduler = AsyncIOScheduler()
-    #     scheduler.add_job(
-    #         lambda: asyncio.create_task(trading_logger.daily_housekeeping()),
-    #         CronTrigger(hour=0, minute=30),
-    #         name="daily_housekeeping"
-    #     )
-    #     # Prefetch watchlist historical data every 30 minutes
-    #     try:
-    #         from services.scheduler_tasks import build_daily_intraday_watchlist
-    #         # Schedule to run every weekday at 9:00 AM
-    #         scheduler.add_job(
-    #             lambda: asyncio.create_task(build_daily_intraday_watchlist()),
-    #             CronTrigger(day_of_week='mon-fri', hour=9, minute=0),
-    #             name="build_intraday_watchlist"
-    #         )
-    #         logger.info("Scheduled daily intraday watchlist builder")
-    #     except Exception as e:
-    #         logger.warning(f"Failed to schedule intraday watchlist builder: {str(e)}")
-    #     try:
-    #         from services.scheduler_tasks import prefetch_watchlist_historical_data
-    #         scheduler.add_job(
-    #             lambda: asyncio.create_task(prefetch_watchlist_historical_data()),
-    #             IntervalTrigger(minutes=30),
-    #             name="prefetch_watchlist_historical_30m",
-    #             coalesce=True,
-    #             max_instances=1
-    #         )
-    #         logger.info("Scheduled 30-minute watchlist historical prefetch")
-    #     except Exception as e:
-    #         logger.warning(f"Failed to schedule 30-minute historical prefetch: {str(e)}")
-    #     scheduler.start()
-    #     app.state.scheduler = scheduler
-    #     logger.info("Scheduler started for daily housekeeping")
-    # except Exception as e:
-    #     logger.warning(f"Failed to start scheduler: {str(e)}")
+    try:
+        settings = get_settings()
+        if getattr(settings, "enable_scheduler", False):
+            scheduler = AsyncIOScheduler()
+            # Daily housekeeping at 00:30
+            scheduler.add_job(
+                lambda: asyncio.create_task(trading_logger.daily_housekeeping()),
+                CronTrigger(hour=0, minute=30),
+                name="daily_housekeeping"
+            )
+
+            # Schedule to run every weekday at 9:00 AM: build intraday watchlist
+            try:
+                from services.scheduler_tasks import build_daily_intraday_watchlist
+                scheduler.add_job(
+                    lambda: asyncio.create_task(build_daily_intraday_watchlist()),
+                    CronTrigger(day_of_week='mon-fri', hour=9, minute=0),
+                    name="build_intraday_watchlist"
+                )
+                logger.info("Scheduled daily intraday watchlist builder (weekdays at 09:00)")
+            except Exception as e:
+                logger.warning(f"Failed to schedule intraday watchlist builder: {str(e)}")
+
+            # Prefetch watchlist historical data every 30 minutes
+            try:
+                from services.scheduler_tasks import prefetch_watchlist_historical_data
+                scheduler.add_job(
+                    lambda: asyncio.create_task(prefetch_watchlist_historical_data()),
+                    IntervalTrigger(minutes=30),
+                    name="prefetch_watchlist_historical_30m",
+                    coalesce=True,
+                    max_instances=1
+                )
+                logger.info("Scheduled 30-minute watchlist historical prefetch")
+            except Exception as e:
+                logger.warning(f"Failed to schedule 30-minute historical prefetch: {str(e)}")
+
+            scheduler.start()
+            app.state.scheduler = scheduler
+            logger.info("Scheduler started for housekeeping and screening tasks")
+        else:
+            logger.info("Scheduler disabled by configuration (ENABLE_SCHEDULER=false)")
+    except Exception as e:
+        logger.warning(f"Failed to start scheduler: {str(e)}")
 
     yield
     

@@ -546,25 +546,49 @@ class DataFetcher:
                 except Exception:
                     pass
 
-            # Resolve to tradingSymbol (e.g. 'RELIANCE-EQ') where possible
-            trading_sym = await self._resolve_trading_symbol(symbol)
-            instruments = [trading_sym if trading_sym else str(symbol).upper()]
-            if trading_sym:
-                logger.debug(f"Resolved symbol {symbol} -> tradingSymbol {trading_sym} for marketquotes")
+            # Prefer numeric instrumentId when possible, provider is more reliable with ids
+            resolved_id = await self._resolve_instrument_id(symbol)
+            trading_sym = None
+            if not resolved_id:
+                trading_sym = await self._resolve_trading_symbol(symbol)
+
+            instruments: List[str] = []
+            if resolved_id:
+                instruments.append(str(resolved_id))
+                logger.debug(f"Resolved symbol {symbol} -> instrumentId {resolved_id} for marketquotes")
+            else:
+                use = trading_sym if trading_sym else str(symbol).upper()
+                instruments.append(use)
+                if trading_sym:
+                    logger.debug(f"Resolved symbol {symbol} -> tradingSymbol {trading_sym} for marketquotes")
+
             result = await self.iifl.get_market_quotes(instruments)
-            
-            if result and result.get("status") == "Ok":
-                quotes = result.get("resultData", [])
-                if quotes:
-                    # Provider may return instrumentId in 'symbol' or a trading symbol; pick first match
-                    q = quotes[0]
-                    price = q.get("ltp")  # Last Traded Price
-                    if price:
-                        self._set_cache(cache_key, float(price), 5)
-                        return float(price)
-            elif result:
-                logger.warning(f"Failed to fetch live price for {symbol}: {result.get('emsg', 'Unknown API error')}")
-            
+
+            # Robustly locate list container (result / resultData / data)
+            quotes_list = None
+            if isinstance(result, dict):
+                for k in ("result", "resultData", "data"):
+                    if isinstance(result.get(k), list):
+                        quotes_list = result.get(k)
+                        break
+
+            if quotes_list:
+                q = quotes_list[0]
+                # Accept multiple possible ltp keys
+                price = None
+                for key in ("ltp", "LastTradedPrice", "lastPrice", "price"):
+                    if q.get(key) is not None:
+                        price = q.get(key)
+                        break
+                if price is not None:
+                    self._set_cache(cache_key, float(price), 5)
+                    return float(price)
+
+            if result:
+                # Provide a useful preview in the logs
+                err = result.get('emsg') or result.get('message') or 'Unknown API error'
+                logger.warning(f"Failed to fetch live price for {symbol}: {err}")
+
             return None
             
         except Exception as e:
@@ -578,28 +602,50 @@ class DataFetcher:
             instr_map: Dict[str, str] = {}
             instruments: List[str] = []
             for s in symbols:
-                trading_sym = await self._resolve_trading_symbol(s)
-                use = trading_sym if trading_sym else str(s).upper()
+                resolved_id = await self._resolve_instrument_id(s)
+                if resolved_id:
+                    use = str(resolved_id)
+                else:
+                    trading_sym = await self._resolve_trading_symbol(s)
+                    use = trading_sym if trading_sym else str(s).upper()
+
                 instruments.append(use)
                 instr_map[str(use)] = s  # map returned instrument -> original symbol
 
             result = await self.iifl.get_market_quotes(instruments)
             prices: Dict[str, float] = {}
 
-            if result and result.get("status") == "Ok":
-                quotes = result.get("resultData", [])
-                for quote in quotes:
-                    returned = quote.get("symbol") or quote.get("instrumentId")
-                    ltp = quote.get("ltp")
-                    if returned and ltp is not None:
-                        orig = instr_map.get(str(returned), None) or instr_map.get(str(returned).upper(), None)
-                        target_symbol = orig or str(returned)
+            # Robustly extract quotes list
+            quotes_list = None
+            if isinstance(result, dict):
+                for k in ("result", "resultData", "data"):
+                    if isinstance(result.get(k), list):
+                        quotes_list = result.get(k)
+                        break
+
+            if quotes_list:
+                for quote in quotes_list:
+                    # Provider may return instrumentId as number or symbol/tradingSymbol
+                    returned = quote.get("instrumentId") or quote.get("symbol") or quote.get("tradingSymbol")
+                    ltp = None
+                    for key in ("ltp", "LastTradedPrice", "lastPrice", "price"):
+                        if quote.get(key) is not None:
+                            ltp = quote.get(key)
+                            break
+                    if returned is None or ltp is None:
+                        continue
+
+                    returned_key = str(returned)
+                    orig = instr_map.get(returned_key) or instr_map.get(returned_key.upper())
+                    target_symbol = orig or returned_key
+                    try:
                         prices[target_symbol] = float(ltp)
-                        # Cache individual prices using original symbol when possible
                         self._set_cache(f"price_{target_symbol}", float(ltp), 5)
+                    except Exception:
+                        continue
             elif result:
-                logger.warning(f"Failed to fetch multiple prices: {result.get('emsg', 'Unknown API error')}")
-            
+                logger.warning(f"Failed to fetch multiple prices: {result.get('emsg', result.get('message', 'Unknown API error'))}")
+
             return prices
             
         except Exception as e:
@@ -613,8 +659,15 @@ class DataFetcher:
             
             if self._is_cache_valid(cache_key, 2):  # 2 sec cache
                 return self.cache[cache_key]
-            
-            result = await self.iifl.get_market_depth(symbol)
+            # Resolve to numeric instrumentId when possible; otherwise use tradingSymbol
+            resolved_id = await self._resolve_instrument_id(symbol)
+            if resolved_id:
+                call_arg = resolved_id
+            else:
+                trading_sym = await self._resolve_trading_symbol(symbol)
+                call_arg = trading_sym if trading_sym else symbol
+
+            result = await self.iifl.get_market_depth(call_arg)
             
             if result and result.get("status") == "Ok":
                 depth_data = result.get("resultData")
@@ -810,9 +863,31 @@ class DataFetcher:
                 limits_resp = await self.iifl.get_limits()
                 if isinstance(limits_resp, dict) and ((limits_resp.get("status") or limits_resp.get("stat")) == "Ok"):
                     result = limits_resp.get("result") or limits_resp.get("resultData") or {}
+                    # Provider may return different key names; normalize common ones
+                    available = None
+                    # Preferred explicit keys
+                    for k in ("availableMargin", "totalCashAvailable", "tradingLimit", "openingCashLimit", "collateralMargin"):
+                        try:
+                            v = result.get(k)
+                            if v is not None:
+                                available = float(v)
+                                break
+                        except Exception:
+                            continue
+
+                    used = None
+                    for k in ("usedMargin", "utilizedMargin", "utilizedSpanMargin", "utilizedExposureMargin"):
+                        try:
+                            v = result.get(k)
+                            if v is not None:
+                                used = float(v)
+                                break
+                        except Exception:
+                            continue
+
                     normalized = {
-                        "availableMargin": float(result.get("availableMargin", result.get("totalCashAvailable", 0.0)) or 0.0),
-                        "usedMargin": float(result.get("usedMargin", 0.0) or 0.0),
+                        "availableMargin": available or 0.0,
+                        "usedMargin": used or 0.0,
                         "totalEquity": float(result.get("totalEquity", 0.0) or 0.0),
                         "spanMargin": float(result.get("spanMargin", 0.0) or 0.0),
                         "exposureMargin": float(result.get("exposureMargin", 0.0) or 0.0),
@@ -914,23 +989,43 @@ class DataFetcher:
         """Get liquidity information for a symbol"""
         try:
             depth = await self.get_market_depth(symbol)
-            
+
             if not depth:
                 return {"volume": 0, "bid_ask_spread": 0, "liquidity_score": 0}
-            
-            # Calculate basic liquidity metrics
-            bid_qty = sum([level.get("quantity", 0) for level in depth.get("bids", [])])
-            ask_qty = sum([level.get("quantity", 0) for level in depth.get("asks", [])])
-            
-            best_bid = depth.get("bids", [{}])[0].get("price", 0) if depth.get("bids") else 0
-            best_ask = depth.get("asks", [{}])[0].get("price", 0) if depth.get("asks") else 0
-            
+
+            # Some provider responses wrap levels under a 'depth' key
+            if isinstance(depth, dict) and "depth" in depth:
+                inner = depth.get("depth") or {}
+                bids = inner.get("bids", [])
+                asks = inner.get("asks", [])
+            else:
+                bids = depth.get("bids", []) if isinstance(depth, dict) else []
+                asks = depth.get("asks", []) if isinstance(depth, dict) else []
+
+            # Provider may also provide aggregate totals which are more accurate
+            total_bid_qty = depth.get("totalBidQuantity") if isinstance(depth, dict) else None
+            total_ask_qty = depth.get("totalAskQuantity") if isinstance(depth, dict) else None
+
+            # If aggregate totals are present and non-zero, use them. Otherwise sum level quantities.
+            try:
+                bid_qty = int(total_bid_qty) if total_bid_qty not in (None, 0) else sum([int(level.get("quantity", 0)) for level in bids])
+            except Exception:
+                bid_qty = sum([int(level.get("quantity", 0)) for level in bids])
+
+            try:
+                ask_qty = int(total_ask_qty) if total_ask_qty not in (None, 0) else sum([int(level.get("quantity", 0)) for level in asks])
+            except Exception:
+                ask_qty = sum([int(level.get("quantity", 0)) for level in asks])
+
+            best_bid = bids[0].get("price", 0) if bids else 0
+            best_ask = asks[0].get("price", 0) if asks else 0
+
             spread = (best_ask - best_bid) / best_bid * 100 if best_bid > 0 else 0
             total_volume = bid_qty + ask_qty
-            
-            # Simple liquidity score (0-100)
-            liquidity_score = min(100, total_volume / 1000)  # Normalize to 100
-            
+
+            # Simple liquidity score (0-100) — scale by 10k to reflect larger aggregate sizes
+            liquidity_score = min(100, total_volume / 10000)
+
             return {
                 "volume": total_volume,
                 "bid_ask_spread": spread,

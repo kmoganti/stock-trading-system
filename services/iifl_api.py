@@ -817,8 +817,19 @@ class IIFLAPIService:
     
     async def get_market_depth(self, instrument: str) -> Optional[Dict]:
         """Get market depth for an instrument"""
-        data = {"instrument": instrument}
-        return await self._make_api_request("POST", "/marketdata/marketdepth", data)
+        # The provider expects an object that indicates exchange + either a numeric
+        # instrumentId or a tradingSymbol. Normalize here to avoid callers having
+        # to guess the correct field name.
+        try:
+            payload: Dict[str, str] = {"exchange": "NSEEQ"}
+            if str(instrument).isdigit():
+                payload["instrumentId"] = str(int(instrument))
+            else:
+                payload["tradingSymbol"] = str(instrument)
+            return await self._make_api_request("POST", "/marketdata/marketdepth", payload)
+        except Exception as e:
+            logger.error(f"Failed to build or send market depth request for {instrument}: {e}")
+            return None
     
     async def get_open_interest(self, instruments: List[str]) -> Optional[Dict]:
         """Get open interest data"""

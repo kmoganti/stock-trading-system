@@ -17,6 +17,21 @@ pyarrow
 # Configuration and environment
 python-dotenv
 
+# Templating
+Jinja2
+
+# Pydantic (settings) - code uses pydantic/pydantic-settings if available
+pydantic
+pydantic-settings
+
+# Async & runtime libraries used by tests and httpx
+anyio
+typing-extensions
+
+# Test dependencies (dev)
+pytest
+pytest-asyncio
+
 # Monitoring and Notifications
 sentry-sdk
 python-telegram-bot

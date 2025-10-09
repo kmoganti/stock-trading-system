@@ -43,6 +43,8 @@ try:
         enable_system_status_checks: bool = Field(False, env="ENABLE_SYSTEM_STATUS_CHECKS")
         telegram_background_tasks_enabled: bool = Field(False, env="TELEGRAM_BACKGROUND_TASKS_ENABLED")
         telegram_notifications_enabled: bool = Field(True, env="TELEGRAM_NOTIFICATIONS_ENABLED")
+        # Scheduler
+        enable_scheduler: bool = Field(False, env="ENABLE_SCHEDULER")
 
         # Database
         database_url: str = Field("sqlite+aiosqlite:///./trading_system.db", env="DATABASE_URL")
@@ -106,6 +108,9 @@ except Exception:
             self.enable_system_status_checks: bool = os.getenv("ENABLE_SYSTEM_STATUS_CHECKS", "false").lower() == "true"
             self.telegram_background_tasks_enabled: bool = os.getenv("TELEGRAM_BACKGROUND_TASKS_ENABLED", "false").lower() == "true"
             self.telegram_notifications_enabled: bool = os.getenv("TELEGRAM_NOTIFICATIONS_ENABLED", "true").lower() != "false"
+
+            # Scheduler flag (opt-in)
+            self.enable_scheduler: bool = os.getenv("ENABLE_SCHEDULER", "false").lower() == "true"
 
             # Database
             self.database_url: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./trading_system.db")
