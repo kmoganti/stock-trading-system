@@ -285,6 +285,33 @@ class DataFetcher:
                 continue
         return None
 
+    async def _resolve_trading_symbol(self, symbol: str) -> Optional[str]:
+        """Resolve a base symbol to the provider's tradingSymbol (e.g. 'RELIANCE-EQ').
+
+        Returns the tradingSymbol string if found, otherwise None.
+        """
+        if not symbol:
+            return None
+        base_symbol = str(symbol).upper().strip()
+        id_map = await self._get_contract_id_map()
+        if not id_map:
+            return None
+
+        # id_map keys are tradingSymbol -> instrumentId
+        # Prefer direct matches for base or with -EQ suffix
+        for candidate in [base_symbol, f"{base_symbol}-EQ", f"{base_symbol}-BE", f"{base_symbol}-SM"]:
+            if candidate in id_map:
+                return candidate
+
+        # fallback: find any key that contains the base symbol
+        for k in id_map.keys():
+            try:
+                if base_symbol in k.upper():
+                    return k
+            except Exception:
+                continue
+        return None
+
     async def get_historical_data_df(self, symbol: str, interval: str, from_date: str, to_date: str) -> Optional[pd.DataFrame]:
         """
         Get historical OHLCV data as a pandas DataFrame.
@@ -330,7 +357,12 @@ class DataFetcher:
         """Internal helper to fetch data from IIFL, handle fallbacks, and standardize the output."""
         # NOTE: Strict single-call implementation (no fallback logic)
         try:
-            result = await self.iifl.get_historical_data(symbol, interval, from_date, to_date)
+            # For historical data the provider prefers tradingSymbol like 'RELIANCE-EQ'
+            trading_sym = await self._resolve_trading_symbol(symbol)
+            call_symbol = trading_sym if trading_sym else symbol
+            if trading_sym:
+                logger.debug(f"Resolved symbol {symbol} -> tradingSymbol {trading_sym} for historical fetch")
+            result = await self.iifl.get_historical_data(call_symbol, interval, from_date, to_date)
             is_successful_response = isinstance(result, dict) and (
                 (str(result.get("status", "")).lower() == "ok") or (str(result.get("stat", "")).lower() == "ok")
             )
@@ -388,14 +420,44 @@ class DataFetcher:
 
             # Perform a full fetch if cache is missing, stale, or delta fetch failed
             logger.info(f"Performing full historical data fetch (strict) for {symbol} from {from_date} to {to_date}.")
+            # First attempt: provider-preferred symbol (resolved tradingSymbol if available)
             full_data = await self._fetch_once_no_fallback(symbol, interval, from_date, to_date)
 
             if full_data:
+                # Successful strict fetch; cache and return
                 self._write_to_file_cache(file_cache_path, full_data)
                 return full_data
-            
-            return []
 
+            # If initial attempt returned no data, try numeric instrumentId fallback
+            try:
+                resolved_id = await self._resolve_instrument_id(symbol)
+                if resolved_id and resolved_id != str(symbol):
+                    logger.debug(f"Historical fetch empty for {symbol}; retrying with instrumentId {resolved_id}")
+                    try:
+                        # Call the API directly with the numeric instrument id
+                        result = await self.iifl.get_historical_data(resolved_id, interval, from_date, to_date)
+                        is_successful_response = isinstance(result, dict) and (
+                            (str(result.get("status", "")).lower() == "ok") or (str(result.get("stat", "")).lower() == "ok")
+                        )
+                        if is_successful_response and result:
+                            raw_list = None
+                            for key in ["result", "data", "resultData"]:
+                                if isinstance(result.get(key), list):
+                                    raw_list = result.get(key)
+                                    break
+                            standardized = self._standardize_historical_payload(raw_list or [])
+                            if standardized:
+                                # Cache and return standardized fallback data
+                                self._write_to_file_cache(file_cache_path, standardized)
+                                return standardized
+                    except Exception:
+                        logger.debug("InstrumentId fallback failed for historical fetch", exc_info=True)
+            except Exception:
+                # resolution failed; silently continue to return empty
+                pass
+
+            # Nothing found
+            return []
         except Exception as e:
             logger.error(f"Error fetching historical data for {symbol}: {str(e)}")
             return []
@@ -484,12 +546,19 @@ class DataFetcher:
                 except Exception:
                     pass
 
-            result = await self.iifl.get_market_quotes([symbol])
+            # Resolve to tradingSymbol (e.g. 'RELIANCE-EQ') where possible
+            trading_sym = await self._resolve_trading_symbol(symbol)
+            instruments = [trading_sym if trading_sym else str(symbol).upper()]
+            if trading_sym:
+                logger.debug(f"Resolved symbol {symbol} -> tradingSymbol {trading_sym} for marketquotes")
+            result = await self.iifl.get_market_quotes(instruments)
             
             if result and result.get("status") == "Ok":
                 quotes = result.get("resultData", [])
                 if quotes:
-                    price = quotes[0].get("ltp")  # Last Traded Price
+                    # Provider may return instrumentId in 'symbol' or a trading symbol; pick first match
+                    q = quotes[0]
+                    price = q.get("ltp")  # Last Traded Price
                     if price:
                         self._set_cache(cache_key, float(price), 5)
                         return float(price)
@@ -505,18 +574,29 @@ class DataFetcher:
     async def get_multiple_prices(self, symbols: List[str]) -> Dict[str, float]:
         """Get live prices for multiple symbols"""
         try:
-            result = await self.iifl.get_market_quotes(symbols)
-            prices = {}
-            
+            # Resolve tradingSymbol for each symbol when possible
+            instr_map: Dict[str, str] = {}
+            instruments: List[str] = []
+            for s in symbols:
+                trading_sym = await self._resolve_trading_symbol(s)
+                use = trading_sym if trading_sym else str(s).upper()
+                instruments.append(use)
+                instr_map[str(use)] = s  # map returned instrument -> original symbol
+
+            result = await self.iifl.get_market_quotes(instruments)
+            prices: Dict[str, float] = {}
+
             if result and result.get("status") == "Ok":
                 quotes = result.get("resultData", [])
                 for quote in quotes:
-                    symbol = quote.get("symbol")
+                    returned = quote.get("symbol") or quote.get("instrumentId")
                     ltp = quote.get("ltp")
-                    if symbol and ltp:
-                        prices[symbol] = float(ltp)
-                        # Cache individual prices
-                        self._set_cache(f"price_{symbol}", float(ltp), 5)
+                    if returned and ltp is not None:
+                        orig = instr_map.get(str(returned), None) or instr_map.get(str(returned).upper(), None)
+                        target_symbol = orig or str(returned)
+                        prices[target_symbol] = float(ltp)
+                        # Cache individual prices using original symbol when possible
+                        self._set_cache(f"price_{target_symbol}", float(ltp), 5)
             elif result:
                 logger.warning(f"Failed to fetch multiple prices: {result.get('emsg', 'Unknown API error')}")
             
@@ -791,8 +871,15 @@ class DataFetcher:
             except Exception:
                 chosen_product = product or "NORMAL"
 
+            # Resolve instrument id for margin calculation to satisfy API numeric-instrument requirement
+            resolved = await self._resolve_instrument_id(symbol)
+            order_symbol = resolved if resolved else symbol
+
+            if resolved:
+                logger.debug(f"Resolved symbol {symbol} -> instrumentId {resolved} for preordermargin")
+
             order_data = self.iifl.format_order_data(
-                symbol=symbol,
+                symbol=order_symbol,
                 transaction_type=transaction_type,
                 quantity=quantity,
                 order_type=final_order_type,

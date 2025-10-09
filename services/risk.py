@@ -151,30 +151,55 @@ class RiskService:
         }
         
         try:
-            symbol = signal['symbol']
-            entry_price = signal['entry_price']
-            
-            # Calculate required margin
-            required_margin = await self.data_fetcher.calculate_required_margin(
-                symbol, position_size, signal['signal_type'].value, entry_price
+            # Support both dict-based signals (incoming payloads) and ORM objects
+            if isinstance(signal, dict):
+                symbol = signal.get('symbol')
+                entry_price = signal.get('entry_price') if signal.get('entry_price') is not None else signal.get('price')
+                raw_signal_type = signal.get('signal_type')
+            else:
+                symbol = getattr(signal, 'symbol', None)
+                entry_price = getattr(signal, 'entry_price', None) or getattr(signal, 'price', None)
+                raw_signal_type = getattr(signal, 'signal_type', None)
+
+            # Normalize signal_type to raw string (support Enum instances)
+            if hasattr(raw_signal_type, 'value'):
+                signal_type_value = raw_signal_type.value
+            else:
+                signal_type_value = raw_signal_type
+
+            # Calculate required margin (API may return dict or numeric)
+            raw_required_margin = await self.data_fetcher.calculate_required_margin(
+                symbol, position_size, signal_type_value, entry_price
             )
-            
-            # In dry-run, allow None and treat as zero to pass validation without broker
-            if required_margin is None:
+
+            # Normalize to numeric value for comparisons
+            if raw_required_margin is None:
                 if getattr(self.settings, "dry_run", False) or self.settings.environment != "production":
-                    required_margin = 0.0
+                    required_margin_value = 0.0
                 else:
                     validation_result["reasons"].append("Unable to calculate required margin")
                     return validation_result
-            
-            validation_result["required_margin"] = required_margin
-            
+            elif isinstance(raw_required_margin, dict):
+                required_margin_value = float(
+                    raw_required_margin.get("current_order_margin")
+                    or raw_required_margin.get("pre_order_margin")
+                    or raw_required_margin.get("post_order_margin")
+                    or 0.0
+                )
+            else:
+                try:
+                    required_margin_value = float(raw_required_margin)
+                except Exception:
+                    required_margin_value = 0.0
+
+            validation_result["required_margin"] = required_margin_value
+
             # Check all risk conditions
             checks = [
                 ("daily_loss", await self.check_daily_loss_limit()),
                 ("drawdown", await self.check_drawdown_limit()),
                 ("position_limits", await self.check_position_limits()),
-                ("margin", await self.check_margin_availability(required_margin)),
+                ("margin", await self.check_margin_availability(required_margin_value)),
                 ("trading_halt", not self.trading_halted)
             ]
             
@@ -197,11 +222,24 @@ class RiskService:
     async def calculate_position_size(self, signal: Dict, available_capital: float) -> int:
         """Calculate optimal position size based on risk parameters"""
         try:
-            entry_price = signal['entry_price']
-            stop_loss = signal['stop_loss']
-            
+            # Accept dict or object for signal
+            if isinstance(signal, dict):
+                entry_price = signal.get('entry_price') if signal.get('entry_price') is not None else signal.get('price')
+                stop_loss = signal.get('stop_loss')
+            else:
+                entry_price = getattr(signal, 'entry_price', None) or getattr(signal, 'price', None)
+                stop_loss = getattr(signal, 'stop_loss', None)
+            # If price or stop_loss missing, log and return minimal position size
+            if entry_price is None or stop_loss is None:
+                logger.warning("Missing entry_price or stop_loss in signal; defaulting position size to 1")
+                return 1
+
             # Risk per share
-            risk_per_share = abs(entry_price - stop_loss)
+            try:
+                risk_per_share = abs(entry_price - stop_loss)
+            except Exception:
+                logger.error("Invalid entry_price/stop_loss values; defaulting position size to 1")
+                return 1
             
             if risk_per_share <= 0:
                 return 1
@@ -213,14 +251,40 @@ class RiskService:
             # Ensure minimum position
             position_size = max(1, position_size)
             
+            # Normalize symbol and signal_type for margin calculation
+            if isinstance(signal, dict):
+                symbol = signal.get('symbol')
+                raw_signal_type = signal.get('signal_type')
+            else:
+                symbol = getattr(signal, 'symbol', None)
+                raw_signal_type = getattr(signal, 'signal_type', None)
+
+            if hasattr(raw_signal_type, 'value'):
+                signal_type_value = raw_signal_type.value
+            else:
+                signal_type_value = raw_signal_type
+
             # Check if position size fits within margin limits
-            required_margin = await self.data_fetcher.calculate_required_margin(
-                signal['symbol'], position_size, signal['signal_type'].value, entry_price
+            raw_required_margin2 = await self.data_fetcher.calculate_required_margin(
+                symbol, position_size, signal_type_value, entry_price
             )
-            
-            if required_margin and required_margin > available_capital * 0.8:  # Use max 80% of capital
+            req_margin_val = 0.0
+            if isinstance(raw_required_margin2, dict):
+                req_margin_val = float(
+                    raw_required_margin2.get("current_order_margin")
+                    or raw_required_margin2.get("pre_order_margin")
+                    or raw_required_margin2.get("post_order_margin")
+                    or 0.0
+                )
+            else:
+                try:
+                    req_margin_val = float(raw_required_margin2) if raw_required_margin2 is not None else 0.0
+                except Exception:
+                    req_margin_val = 0.0
+
+            if req_margin_val and req_margin_val > available_capital * 0.8:  # Use max 80% of capital
                 # Scale down position size
-                scale_factor = (available_capital * 0.8) / required_margin
+                scale_factor = (available_capital * 0.8) / req_margin_val
                 position_size = max(1, int(position_size * scale_factor))
             
             return position_size

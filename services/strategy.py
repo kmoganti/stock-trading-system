@@ -213,6 +213,13 @@ class StrategyService:
         try:
             if len(df) < 2:
                 return None
+
+            # Defensive: ensure indicators are present before usage
+            needed = ['ema_9', 'ema_21', 'ema_50', 'close', 'volume_ratio', 'rsi', 'atr']
+            for col in needed:
+                if col not in df.columns:
+                    logger.debug(f"EMA strategy skipping {symbol}: missing indicator column '{col}'")
+                    return None
             
             current = df.iloc[-1]
             previous = df.iloc[-2]
@@ -279,6 +286,13 @@ class StrategyService:
         try:
             if len(df) < 2:
                 return None
+
+            # Defensive: ensure indicators are present before usage
+            needed = ['bb_lower', 'bb_middle', 'bb_upper', 'rsi', 'volume_ratio', 'atr', 'close']
+            for col in needed:
+                if col not in df.columns:
+                    logger.debug(f"Bollinger strategy skipping {symbol}: missing indicator column '{col}'")
+                    return None
             
             current = df.iloc[-1]
             
@@ -335,6 +349,13 @@ class StrategyService:
         try:
             if len(df) < 3:
                 return None
+
+            # Defensive: ensure indicators are present before usage
+            needed = ['macd', 'macd_signal', 'price_momentum', 'rsi', 'atr', 'volume_ratio', 'close']
+            for col in needed:
+                if col not in df.columns:
+                    logger.debug(f"Momentum strategy skipping {symbol}: missing indicator column '{col}'")
+                    return None
             
             current = df.iloc[-1]
             previous = df.iloc[-2]

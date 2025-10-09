@@ -31,6 +31,21 @@ class OrderManager:
             # Calculate expiry time
             expiry_time = datetime.now() + timedelta(seconds=self.settings.signal_timeout)
             
+            # Normalize incoming signal_data: ensure entry_price exists (fallback to price)
+            if 'entry_price' not in signal_data or signal_data.get('entry_price') is None:
+                if 'price' in signal_data and signal_data.get('price') is not None:
+                    signal_data['entry_price'] = signal_data['price']
+
+            # Normalize signal_type: accept either enum or plain string
+            raw_st = signal_data.get('signal_type')
+            if raw_st and not hasattr(raw_st, 'value') and isinstance(raw_st, str):
+                try:
+                    # Try to map to SignalType enum if available
+                    signal_data['signal_type'] = SignalType(raw_st.lower())
+                except Exception:
+                    # leave as-is; risk/other services accept string too
+                    pass
+
             # Calculate required margin
             position_size = await self.risk.calculate_position_size(
                 signal_data, 
@@ -40,7 +55,7 @@ class OrderManager:
             required_margin_info = await self.data_fetcher.calculate_required_margin(
                 signal_data['symbol'],
                 position_size,
-                signal_data['signal_type'].value,
+                signal_data['signal_type'].value if hasattr(signal_data.get('signal_type'), 'value') else signal_data.get('signal_type'),
                 signal_data['entry_price']
             )
             # Normalize required margin to a float value
@@ -68,7 +83,7 @@ class OrderManager:
                 status=SignalStatus.PENDING,
                 expiry_time=expiry_time,
                 quantity=position_size,
-                price=signal_data['entry_price'],
+                price=signal_data.get('entry_price') if signal_data.get('entry_price') is not None else signal_data.get('price'),
                 extras={
                     'confidence': signal_data.get('confidence', 0.5),
                     'strategy': signal_data.get('strategy', 'unknown')

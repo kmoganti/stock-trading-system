@@ -386,6 +386,18 @@ class IIFLAPIService:
             # The request body should only contain the data specific to the endpoint.
             # The session token is sent in the header.
             request_body = data if data is not None else {}
+
+            # Helper to extract a compact representation of request body keys for logging
+            def _request_body_keys(rb):
+                try:
+                    if isinstance(rb, dict):
+                        return list(rb.keys())
+                    if isinstance(rb, list):
+                        # represent list payloads as a list marker; don't try to inspect inner objs here
+                        return ["<list>"]
+                    return [str(type(rb))]
+                except Exception:
+                    return ["<unknown>"]
             
             # Mask Authorization header for logs
             masked_headers = dict(headers)
@@ -412,7 +424,7 @@ class IIFLAPIService:
                 "url": url,
                 "endpoint": endpoint,
                 "has_bearer_token": bool(self.session_token),
-                "data_keys": list(request_body.keys())
+                "data_keys": _request_body_keys(request_body)
             })
 
             try:
@@ -519,17 +531,46 @@ class IIFLAPIService:
                             logger.error("Re-authentication failed or mock token obtained; aborting retry for production flow.")
                             break
 
-                    # Other non-200 statuses
-                    error_msg = f"IIFL API request failed: {response.status_code} - {response.text}"
+                    # Other non-200 statuses: capture full response body (JSON or text) for debugging
+                    try:
+                        # Try to get JSON body if present
+                        response_body = response.json()
+                        body_preview = json.dumps(response_body)[:800]
+                    except Exception:
+                        response_body = response.text
+                        body_preview = str(response.text)[:800]
+
+                    error_msg = f"IIFL API request failed: {response.status_code} - body_preview={body_preview}"
                     logger.error(error_msg)
+
+                    # Log API call with a snippet of the response body to help debug 4xx/5xx cases
                     trading_logger.log_api_call(
                         endpoint=url,
                         method=method.upper(),
                         status_code=response.status_code,
                         response_time=response_time,
-                        error=f"HTTP {response.status_code}: {response.text[:200]}",
+                        error=f"HTTP {response.status_code}: {body_preview}",
                         request_body=request_body
                     )
+
+                    # Also log an error event with full response body (non-sensitive) for later inspection
+                    try:
+                        trading_logger.log_system_event("iifl_api_error_response", {
+                            "url": url,
+                            "status_code": response.status_code,
+                            "response_headers": dict(response.headers),
+                            "response_body": response_body,
+                            "request_body": request_body
+                        })
+                    except Exception:
+                        # best-effort logging: don't fail the flow if complex object can't be serialized
+                        trading_logger.log_system_event("iifl_api_error_response", {
+                            "url": url,
+                            "status_code": response.status_code,
+                            "response_text_preview": body_preview,
+                            "request_body": request_body
+                        })
+
                     return None
 
             except httpx.RequestError as e:
@@ -692,8 +733,9 @@ class IIFLAPIService:
         try:
             from_dt_parsed = datetime.strptime(from_date, "%Y-%m-%d")
             to_dt_parsed = datetime.strptime(to_date, "%Y-%m-%d")
-            dd_mon_yyyy_from = from_dt_parsed.strftime("%d-%b-%Y").lower()
-            dd_mon_yyyy_to = to_dt_parsed.strftime("%d-%b-%Y").lower()
+            # Keep month abbreviation capitalization as provider may expect e.g. '29-Jun-2025'
+            dd_mon_yyyy_from = from_dt_parsed.strftime("%d-%b-%Y")
+            dd_mon_yyyy_to = to_dt_parsed.strftime("%d-%b-%Y")
         except Exception:
             dd_mon_yyyy_from = from_date
             dd_mon_yyyy_to = to_date
@@ -738,10 +780,40 @@ class IIFLAPIService:
         """Get real-time market quotes"""
         # Ensure all instruments are strings
         instrument_strs = [str(instr) for instr in instruments]
-        data = {"instruments": instrument_strs}
-        
-        # Call API and return result
-        return await self._make_api_request("POST", "/marketdata/marketquotes", data)
+        # Minimal fallback strategy to reduce number of outbound calls:
+        # 1) Try raw-array-of-objects payload (curl-like): [{"exchange":"NSEEQ","instrumentId":"14366"}]
+        # 2) If that returns None, try a single minimal JSON object: {"instruments": [ ... ]}
+        try:
+            raw_obj_list = []
+            for s in instrument_strs:
+                obj = {"exchange": "NSEEQ"}
+                # prefer numeric instrumentId when caller supplied a numeric id
+                if str(s).isdigit():
+                    obj["instrumentId"] = str(int(s))
+                else:
+                    obj["tradingSymbol"] = str(s)
+                raw_obj_list.append(obj)
+
+            if raw_obj_list:
+                logger.debug(f"Trying raw-array marketquotes payload (minimal): {raw_obj_list}")
+                resp = await self._make_api_request("POST", "/marketdata/marketquotes", raw_obj_list)
+                if resp is not None:
+                    return resp
+        except Exception as e:
+            logger.debug(f"raw-array marketquotes attempt failed: {e}")
+
+        # Second (and final) attempt: single JSON object with 'instruments' key
+        try:
+            minimal_payload = {"instruments": instrument_strs}
+            logger.debug(f"Trying minimal marketquotes payload: {minimal_payload}")
+            resp = await self._make_api_request("POST", "/marketdata/marketquotes", minimal_payload)
+            if resp is not None:
+                return resp
+        except Exception as e:
+            logger.debug(f"minimal marketquotes attempt failed: {e}")
+
+        logger.error(f"Marketquotes minimal attempts failed for instruments={instrument_strs}")
+        return None
     
     async def get_market_depth(self, instrument: str) -> Optional[Dict]:
         """Get market depth for an instrument"""
