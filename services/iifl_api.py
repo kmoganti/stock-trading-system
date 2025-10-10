@@ -455,16 +455,38 @@ class IIFLAPIService:
                             masked_headers_loop["Authorization"] = "Bearer ***"
                     logger.info(f"IIFL API Attempt Headers: {json.dumps(masked_headers_loop)}")
 
-                    if method.upper() == "GET":
-                        response = await client.get(url, headers=headers, params=request_body)
-                    elif method.upper() == "POST":
-                        response = await client.post(url, headers=headers, data=json.dumps(request_body))
-                    elif method.upper() == "PUT":
-                        response = await client.put(url, headers=headers, data=json.dumps(request_body))
-                    elif method.upper() == "DELETE":
-                        response = await client.delete(url, headers=headers)
-                    else:
-                        raise ValueError(f"Unsupported HTTP method: {method}")
+                    # Implement small transient retry loop for network-level errors
+                    max_attempts = 3
+                    attempt = 0
+                    last_exc = None
+                    while attempt < max_attempts:
+                        attempt += 1
+                        try:
+                            if method.upper() == "GET":
+                                response = await client.get(url, headers=headers, params=request_body)
+                            elif method.upper() == "POST":
+                                response = await client.post(url, headers=headers, data=json.dumps(request_body))
+                            elif method.upper() == "PUT":
+                                response = await client.put(url, headers=headers, data=json.dumps(request_body))
+                            elif method.upper() == "DELETE":
+                                response = await client.delete(url, headers=headers)
+                            else:
+                                raise ValueError(f"Unsupported HTTP method: {method}")
+                            # If we have a response, break out of retry loop
+                            break
+                        except httpx.RequestError as re:
+                            last_exc = re
+                            # On transient network issues, backoff and retry a couple of times
+                            backoff = 0.5 * (2 ** (attempt - 1))
+                            logger.warning(f"Transient network error on attempt {attempt}/{max_attempts} for {endpoint}, retrying after {backoff}s: {re}")
+                            try:
+                                await asyncio.sleep(backoff)
+                            except Exception:
+                                pass
+                            continue
+                    # If loop exited normally without break and last_exc is set, raise it
+                    if attempt >= max_attempts and last_exc:
+                        raise last_exc
 
                     response_time = time.perf_counter() - attempt_start
 
@@ -780,29 +802,57 @@ class IIFLAPIService:
         """Get real-time market quotes"""
         # Ensure all instruments are strings
         instrument_strs = [str(instr) for instr in instruments]
-        # Minimal fallback strategy to reduce number of outbound calls:
-        # 1) Try raw-array-of-objects payload (curl-like): [{"exchange":"NSEEQ","instrumentId":"14366"}]
-        # 2) If that returns None, try a single minimal JSON object: {"instruments": [ ... ]}
+
+        # Check if instrumentId-only enforcement is enabled via env var
+        instrumentid_only = str(os.getenv("IIFL_INSTRUMENTID_ONLY", "True")).lower() in ("1", "true", "yes")
+
+        # Try to load local contract map if present (data/contracts_nseeq.json)
+        local_map: Dict[str, str] = {}
+        try:
+            local_path = os.path.join(os.getcwd(), "data", "contracts_nseeq.json")
+            if os.path.exists(local_path):
+                with open(local_path, "r", encoding="utf-8") as f:
+                    local_map = {k.upper(): str(v) for k, v in json.load(f).items()}
+        except Exception:
+            local_map = {}
+
         try:
             raw_obj_list = []
+            skipped = []
             for s in instrument_strs:
                 obj = {"exchange": "NSEEQ"}
-                # prefer numeric instrumentId when caller supplied a numeric id
                 if str(s).isdigit():
                     obj["instrumentId"] = str(int(s))
                 else:
-                    obj["tradingSymbol"] = str(s)
+                    mapped = local_map.get(str(s).upper())
+                    if mapped:
+                        obj["instrumentId"] = str(mapped)
+                    else:
+                        if instrumentid_only:
+                            skipped.append(s)
+                            continue
+                        else:
+                            obj["tradingSymbol"] = str(s)
                 raw_obj_list.append(obj)
 
-            if raw_obj_list:
-                logger.debug(f"Trying raw-array marketquotes payload (minimal): {raw_obj_list}")
-                resp = await self._make_api_request("POST", "/marketdata/marketquotes", raw_obj_list)
-                if resp is not None:
-                    return resp
+            if not raw_obj_list:
+                logger.warning(f"No valid instrumentId resolved for marketquotes; skipped={skipped}")
+                return None
+
+            logger.debug(f"Trying raw-array marketquotes payload (minimal): {raw_obj_list}")
+            resp = await self._make_api_request("POST", "/marketdata/marketquotes", raw_obj_list)
+            if resp is not None:
+                return resp
+
+            # If instrumentId-only enforced, avoid the slow/minimal fallback to reduce failing calls
+            if instrumentid_only:
+                logger.warning("InstrumentId-only mode enabled and marketquotes raw-array returned None; aborting without fallback")
+                return None
+
         except Exception as e:
             logger.debug(f"raw-array marketquotes attempt failed: {e}")
 
-        # Second (and final) attempt: single JSON object with 'instruments' key
+        # Second (and final) attempt: single JSON object with 'instruments' key (legacy fallback)
         try:
             minimal_payload = {"instruments": instrument_strs}
             logger.debug(f"Trying minimal marketquotes payload: {minimal_payload}")
@@ -822,10 +872,30 @@ class IIFLAPIService:
         # to guess the correct field name.
         try:
             payload: Dict[str, str] = {"exchange": "NSEEQ"}
+            instrumentid_only = str(os.getenv("IIFL_INSTRUMENTID_ONLY", "True")).lower() in ("1", "true", "yes")
             if str(instrument).isdigit():
                 payload["instrumentId"] = str(int(instrument))
             else:
-                payload["tradingSymbol"] = str(instrument)
+                # try local contract map when available
+                try:
+                    local_path = os.path.join(os.getcwd(), "data", "contracts_nseeq.json")
+                    if os.path.exists(local_path):
+                        with open(local_path, "r", encoding="utf-8") as f:
+                            local_map = {k.upper(): str(v) for k, v in json.load(f).items()}
+                            mapped = local_map.get(str(instrument).upper())
+                            if mapped:
+                                payload["instrumentId"] = str(mapped)
+                            elif instrumentid_only:
+                                logger.warning(f"InstrumentId-only mode: could not resolve {instrument} to id for market depth")
+                                return None
+                            else:
+                                payload["tradingSymbol"] = str(instrument)
+                except Exception:
+                    if instrumentid_only:
+                        logger.warning(f"InstrumentId-only mode and local map unavailable; cannot resolve {instrument}")
+                        return None
+                    payload["tradingSymbol"] = str(instrument)
+
             return await self._make_api_request("POST", "/marketdata/marketdepth", payload)
         except Exception as e:
             logger.error(f"Failed to build or send market depth request for {instrument}: {e}")

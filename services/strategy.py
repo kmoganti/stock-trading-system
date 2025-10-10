@@ -8,6 +8,9 @@ from models.signals import Signal, SignalType, SignalStatus
 from config.settings import get_settings
 from dataclasses import dataclass
 
+# Logger for this module
+logger = logging.getLogger(__name__)
+
 # Optional imports for advanced features
 try:
     import pandas as pd
@@ -16,21 +19,24 @@ try:
     HAS_PANDAS = True
 except ImportError:
     HAS_PANDAS = False
-    # Create dummy classes for basic functionality
+
+    # Minimal pandas-like DataFrame placeholder
     class pd:
         class DataFrame:
             def __init__(self, data=None):
                 self.data = data or []
                 self.empty = len(self.data) == 0
-                self.columns = []
+                # infer columns if possible
+                self.columns = list(data[0].keys()) if data and isinstance(data[0], dict) else []
             def __len__(self):
                 return len(self.data)
-    
+
+    # Minimal numpy-like helpers
     class np:
         @staticmethod
         def mean(data):
             return sum(data) / len(data) if data else 0
-        
+
         @staticmethod
         def std(data):
             if not data:
@@ -38,11 +44,9 @@ except ImportError:
             mean_val = np.mean(data)
             return (sum((x - mean_val) ** 2 for x in data) / len(data)) ** 0.5
 
-logger = logging.getLogger(__name__)
 
 @dataclass
 class TradingSignal:
-    """Lightweight signal class for strategy calculations"""
     symbol: str
     signal_type: SignalType
     entry_price: float
@@ -50,25 +54,31 @@ class TradingSignal:
     target_price: float
     confidence: float
     strategy: str
-    metadata: Optional[Dict] = None
+    metadata: Optional[Dict[str, Any]] = None
+
 
 class StrategyService:
     """Core trading strategy service with multiple algorithms"""
-    
+
     def __init__(self, data_fetcher: DataFetcher, db: Optional[AsyncSession] = None):
         self.data_fetcher = data_fetcher
         self.db = db
         self.settings = get_settings()
         self.watchlist_service = WatchlistService(db) if db is not None else None
         self._watchlist_by_category: Dict[Optional[str], List[str]] = {}
-        from services.telegram_notifier import TelegramNotifier
-        self._notifier = TelegramNotifier()
+        # Lazy import notifier to avoid import cycles in tests
+        try:
+            from services.telegram_notifier import TelegramNotifier
+            self._notifier = TelegramNotifier()
+        except Exception:
+            self._notifier = None
+
         self._strategy_map = {
             "ema_crossover": self._ema_crossover_strategy,
             "bollinger_bands": self._bollinger_bands_strategy,
             "momentum": self._momentum_strategy,
         }
-    
+
     def calculate_indicators(self, df) -> Dict:
         """Calculate technical indicators for the dataframe"""
         try:
@@ -417,8 +427,11 @@ class StrategyService:
     async def _validate_signal(self, signal: TradingSignal, historical_data: List[Dict]) -> bool:
         """Validate signal against basic criteria"""
         try:
+            # Per-signal validation start log
+            logger.debug(f"Validating signal: {signal.strategy} {signal.signal_type.value} {signal.symbol} entry={signal.entry_price} stop={signal.stop_loss} target={signal.target_price} confidence={signal.confidence}")
             # Basic validation checks
             if not signal or not signal.symbol:
+                logger.debug("Validation failed: missing signal or symbol")
                 return False
             
             # Check if price is reasonable
@@ -439,6 +452,7 @@ class StrategyService:
             
             # Check confidence level
             if signal.confidence < 0.5:
+                logger.debug(f"Validation failed: confidence {signal.confidence} < 0.5")
                 return False
             
             # Get current market data for additional validation
@@ -446,14 +460,17 @@ class StrategyService:
             if current_price and abs(current_price - signal.entry_price) / signal.entry_price > 0.05:
                 # Price has moved more than 5% since signal generation
                 logger.warning(f"Signal for {signal.symbol} may be stale - price moved from {signal.entry_price} to {current_price}")
+                logger.debug("Validation failed: price moved >5%")
                 return False
             
             # Check liquidity (soft-fail if unavailable)
             liquidity_info = await self.data_fetcher.get_liquidity_info(signal.symbol)
             if liquidity_info and liquidity_info.get('liquidity_score', 0) < 20:  # Low liquidity threshold
                 logger.warning(f"Low liquidity for {signal.symbol}: {liquidity_info.get('liquidity_score', 0)}")
+                logger.debug("Validation failed: low liquidity")
                 return False
             
+            logger.debug("Validation passed")
             return True
             
         except Exception as e:
@@ -604,10 +621,20 @@ class StrategyService:
             if not validate:
                 return signals
 
+            # Validate each signal and log details
             filtered: List[TradingSignal] = []
             for sig in signals:
-                if await self._validate_signal(sig, data):
-                    filtered.append(sig)
+                try:
+                    logger.info(
+                        f"Generated signal: {sig.strategy} {sig.signal_type.value} {sig.symbol} "
+                        f"entry={sig.entry_price} stop={sig.stop_loss} target={sig.target_price} confidence={sig.confidence}"
+                    )
+                    ok = await self._validate_signal(sig, data)
+                    logger.info(f"Validation result for {sig.symbol}: {'PASS' if ok else 'FAIL'}")
+                    if ok:
+                        filtered.append(sig)
+                except Exception as e:
+                    logger.error(f"Error during per-signal validation/logging for {sig.symbol}: {e}")
             return filtered
         except Exception as e:
             logger.error(f"Error generating signals from pre-fetched data for {symbol}: {e}")

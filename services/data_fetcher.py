@@ -216,11 +216,38 @@ class DataFetcher:
             cached = self._get_cache(cache_key)
             if isinstance(cached, dict):
                 return cached
-
-        url = "https://api.iiflcapital.com/v1/contractfiles/NSEEQ.json"
+        # Try to read a persisted local copy first to avoid network calls during a sweep
+        local_path = Path("data/contracts_nseeq.json")
         id_map: Dict[str, Any] = {}
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            if local_path.exists():
+                try:
+                    with open(local_path, "r", encoding="utf-8") as f:
+                        file_data = json.load(f)
+                        if isinstance(file_data, dict):
+                            # Normalize keys when loading so lookups are robust to punctuation/case
+                            norm_map: Dict[str, str] = {}
+                            for k, v in file_data.items():
+                                try:
+                                    kk = str(k).upper().strip()
+                                    # store raw key and a simplified alnum-only key to handle variants
+                                    norm_map[kk] = str(v)
+                                    simple = ''.join(ch for ch in kk if ch.isalnum())
+                                    if simple and simple not in norm_map:
+                                        norm_map[simple] = str(v)
+                                except Exception:
+                                    continue
+                            id_map = norm_map
+                            # populate short-term cache
+                            if id_map:
+                                self._set_cache(cache_key, id_map, ttl_seconds=12 * 60 * 60)
+                                return id_map
+                except Exception as e:
+                    logger.warning(f"Could not read local contract map {local_path}: {e}")
+
+            # Fallback to fetching from provider and persist to disk
+            url = "https://api.iiflcapital.com/v1/contractfiles/NSEEQ.json"
+            async with httpx.AsyncClient(timeout=20.0) as client:
                 resp = await client.get(url)
                 resp.raise_for_status()
                 data = resp.json()
@@ -242,9 +269,17 @@ class DataFetcher:
                     except Exception:
                         continue
 
-                if id_map:
-                    self._set_cache(cache_key, id_map, ttl_seconds=12 * 60 * 60)
-                return id_map
+            # Persist to local file for future runs
+            try:
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(local_path, "w", encoding="utf-8") as f:
+                    json.dump(id_map, f)
+            except Exception as e:
+                logger.warning(f"Could not persist contract map to {local_path}: {e}")
+
+            if id_map:
+                self._set_cache(cache_key, id_map, ttl_seconds=12 * 60 * 60)
+            return id_map
         except Exception as e:
             logger.warning(f"Failed to download NSEEQ contracts: {str(e)}")
             return {}
@@ -264,22 +299,42 @@ class DataFetcher:
             pass
 
         base_symbol = str(symbol).upper().strip()
-        # Remove common suffixes for base lookup
+        # Prepare simplified base (alnum only) to match normalized keys
+        simple_base = ''.join(ch for ch in base_symbol if ch.isalnum())
+
+        # Remove common suffixes for base lookup e.g. RELIANCE-EQ -> RELIANCE
         base_part = base_symbol.split("-", 1)[0] if "-" in base_symbol else base_symbol
+        candidates: List[str] = []
+        # direct and common suffix variants
+        candidates.append(base_symbol)
+        candidates.append(base_part)
+        candidates.append(f"{base_part}-EQ")
+        candidates.append(f"{base_part}-BE")
+        candidates.append(f"{base_part}-SM")
+        # simple alnum-only forms
+        if simple_base:
+            candidates.append(simple_base)
+            candidates.append(f"{simple_base}EQ")
 
         id_map = await self._get_contract_id_map()
         if not id_map:
             return None
 
-        # Priority: exact base, explicit -EQ, then contains match
-        for key in [base_part, f"{base_part}-EQ", base_symbol]:
-            if key in id_map and id_map[key]:
-                return str(id_map[key])
+        # Try candidates in order
+        for key in candidates:
+            try:
+                if key in id_map and id_map[key]:
+                    return str(id_map[key])
+            except Exception:
+                continue
 
-        # Last resort: any key containing base_part
+        # Fallback: any key that contains the alnum base or base_part
         for k, v in id_map.items():
             try:
-                if base_part in str(k).upper() and v:
+                ku = str(k).upper()
+                if simple_base and simple_base in ''.join(ch for ch in ku if ch.isalnum()):
+                    return str(v)
+                if base_part and base_part in ku:
                     return str(v)
             except Exception:
                 continue
@@ -293,20 +348,27 @@ class DataFetcher:
         if not symbol:
             return None
         base_symbol = str(symbol).upper().strip()
+        simple_base = ''.join(ch for ch in base_symbol if ch.isalnum())
         id_map = await self._get_contract_id_map()
         if not id_map:
             return None
 
-        # id_map keys are tradingSymbol -> instrumentId
-        # Prefer direct matches for base or with -EQ suffix
-        for candidate in [base_symbol, f"{base_symbol}-EQ", f"{base_symbol}-BE", f"{base_symbol}-SM"]:
+        candidates = [base_symbol, f"{base_symbol}-EQ", f"{base_symbol}-BE", f"{base_symbol}-SM"]
+        if simple_base:
+            candidates.append(simple_base)
+            candidates.append(f"{simple_base}EQ")
+
+        for candidate in candidates:
             if candidate in id_map:
                 return candidate
 
-        # fallback: find any key that contains the base symbol
+        # fallback: find any key that contains the base symbol or simplified base
         for k in id_map.keys():
             try:
-                if base_symbol in k.upper():
+                ku = str(k).upper()
+                if simple_base and simple_base in ''.join(ch for ch in ku if ch.isalnum()):
+                    return k
+                if base_symbol in ku:
                     return k
             except Exception:
                 continue
@@ -596,41 +658,82 @@ class DataFetcher:
             return None
     
     async def get_multiple_prices(self, symbols: List[str]) -> Dict[str, float]:
-        """Get live prices for multiple symbols"""
+        """Get live prices for multiple symbols using batched marketquotes by instrumentId.
+
+        This prefers numeric instrumentId payloads and sends requests in chunks to
+        avoid provider-side tradingSymbol failures observed during large sweeps.
+        """
         try:
-            # Resolve tradingSymbol for each symbol when possible
-            instr_map: Dict[str, str] = {}
-            instruments: List[str] = []
-            for s in symbols:
+            return await self._get_prices_batched(symbols, batch_size=25)
+        except Exception as e:
+            logger.error(f"Error fetching multiple prices (batched): {str(e)}")
+            return {}
+
+    async def _get_prices_batched(self, symbols: List[str], batch_size: int = 25) -> Dict[str, float]:
+        """Resolve instrument ids (prefer numeric), batch marketquotes calls, and map results back.
+
+        Returns a dict mapping original symbol -> price for the quotes that were found.
+        """
+        prices: Dict[str, float] = {}
+        if not symbols:
+            return prices
+
+        # Build mapping of the exact key we will send to the API -> original symbol
+        instr_map: Dict[str, str] = {}
+        keys: List[str] = []
+        for s in symbols:
+            try:
                 resolved_id = await self._resolve_instrument_id(s)
                 if resolved_id:
-                    use = str(resolved_id)
+                    key = str(resolved_id)
                 else:
                     trading_sym = await self._resolve_trading_symbol(s)
-                    use = trading_sym if trading_sym else str(s).upper()
+                    key = trading_sym if trading_sym else str(s).upper()
+                instr_map[str(key)] = s
+                keys.append(str(key))
+            except Exception:
+                # Fall back to raw symbol if resolution fails
+                key = str(s).upper()
+                instr_map[key] = s
+                keys.append(key)
 
-                instruments.append(use)
-                instr_map[str(use)] = s  # map returned instrument -> original symbol
+        # Issue batched marketquotes requests using the provider-preferred numeric ids when present
+        for i in range(0, len(keys), batch_size):
+            chunk = keys[i:i+batch_size]
+            try:
+                resp = await self.iifl.get_market_quotes(chunk)
+            except Exception as e:
+                logger.warning(f"Batch marketquotes request failed for chunk {chunk}: {e}")
+                continue
 
-            result = await self.iifl.get_market_quotes(instruments)
-            prices: Dict[str, float] = {}
+            if not resp:
+                logger.warning(f"Batch marketquotes returned None for chunk {chunk}")
+                continue
 
-            # Robustly extract quotes list
+            # Extract quotes list
             quotes_list = None
-            if isinstance(result, dict):
+            if isinstance(resp, dict):
                 for k in ("result", "resultData", "data"):
-                    if isinstance(result.get(k), list):
-                        quotes_list = result.get(k)
+                    if isinstance(resp.get(k), list):
+                        quotes_list = resp.get(k)
                         break
 
-            if quotes_list:
-                for quote in quotes_list:
-                    # Provider may return instrumentId as number or symbol/tradingSymbol
-                    returned = quote.get("instrumentId") or quote.get("symbol") or quote.get("tradingSymbol")
+            if not quotes_list:
+                # Log preview for debugging
+                try:
+                    preview = resp.get('message') if isinstance(resp, dict) else str(resp)
+                except Exception:
+                    preview = str(resp)
+                logger.warning(f"No quotes returned for chunk {chunk}: {preview}")
+                continue
+
+            for q in quotes_list:
+                try:
+                    returned = q.get("instrumentId") or q.get("symbol") or q.get("tradingSymbol")
                     ltp = None
                     for key in ("ltp", "LastTradedPrice", "lastPrice", "price"):
-                        if quote.get(key) is not None:
-                            ltp = quote.get(key)
+                        if q.get(key) is not None:
+                            ltp = q.get(key)
                             break
                     if returned is None or ltp is None:
                         continue
@@ -643,14 +746,10 @@ class DataFetcher:
                         self._set_cache(f"price_{target_symbol}", float(ltp), 5)
                     except Exception:
                         continue
-            elif result:
-                logger.warning(f"Failed to fetch multiple prices: {result.get('emsg', result.get('message', 'Unknown API error'))}")
+                except Exception:
+                    continue
 
-            return prices
-            
-        except Exception as e:
-            logger.error(f"Error fetching multiple prices: {str(e)}")
-            return {}
+        return prices
     
     async def get_market_depth(self, symbol: str) -> Optional[Dict]:
         """Get market depth (bid/ask levels)"""
