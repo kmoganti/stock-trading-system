@@ -279,12 +279,12 @@ class IIFLAPIService:
             
             return {}
     
-    async def authenticate(self, client_id: Optional[str] = None, auth_code: Optional[str] = None, app_secret: Optional[str] = None) -> bool:
+    async def authenticate(self, client_id: Optional[str] = None, auth_code: Optional[str] = None, app_secret: Optional[str] = None) -> dict:
         """Authenticate with IIFL API, protected by a lock to prevent race conditions."""
         async with _auth_lock:
             # Double-check if a token was acquired while waiting for the lock
             if self.session_token:
-                return True
+                return {"access_token": self.session_token, "expires_in": 3600}
 
             # Allow overrides for tests
             if client_id:
@@ -296,7 +296,7 @@ class IIFLAPIService:
 
             if not self.auth_code:
                 logger.error("No auth code available for authentication")
-                return False
+                return {"error": "No auth code available for authentication"}
             
             try:
                 logger.info("Attempting IIFL API authentication with checksum method")
@@ -335,7 +335,7 @@ class IIFLAPIService:
                     logger.info("Creating mock session for development/testing")
                     self.session_token = f"mock_token_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                     return {"access_token": self.session_token, "expires_in": 3600}
-                return False
+                return {"error": "Authentication failed"}
                     
             except Exception as e:
                 logger.error(f"IIFL API authentication exception: {str(e)}")
@@ -343,8 +343,8 @@ class IIFLAPIService:
                 if env_name in ["development", "dev", "test", "testing"]:
                     logger.info("Creating mock session for development/testing")
                     self.session_token = f"mock_token_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                    return True
-                return False
+                    return {"access_token": self.session_token, "expires_in": 3600}
+                return {"error": f"Authentication exception: {str(e)}"}
     
     async def _ensure_authenticated(self) -> bool:
         """Ensure we have a valid authentication"""
@@ -359,7 +359,8 @@ class IIFLAPIService:
             return True
         
         # If still no token, call the lock-protected authenticate method.
-        return await self.authenticate()
+        auth_result = await self.authenticate()
+        return "access_token" in auth_result if isinstance(auth_result, dict) else False
     
     async def _make_api_request(self, method: str, endpoint: str, data: Optional[Dict] = None) -> Optional[Dict]:
         """Make an authenticated API request using the session token."""
@@ -545,8 +546,9 @@ class IIFLAPIService:
                         # Clear token and re-authenticate
                         self.session_token = None
                         self._save_token_to_cache("") # Clear cached token
-                        reauth_ok = await self.authenticate()
+                        reauth_result = await self.authenticate()
                         attempted_reauth = True
+                        reauth_ok = "access_token" in reauth_result if isinstance(reauth_result, dict) else False
                         if reauth_ok and self.session_token and not str(self.session_token).startswith("mock_"):
                             continue  # Retry once with new token
                         else:
@@ -776,7 +778,7 @@ class IIFLAPIService:
 
         interval_norm = _normalize_interval_value(interval)
 
-        # --- Payload Preparation ---
+        # --- Payload Preparation (instrumentId only) ---
         payload = {
             "exchange": "NSEEQ",
             "interval": interval_norm,
@@ -788,7 +790,14 @@ class IIFLAPIService:
             # Provider accepts InstrumentId (camel-case I) based on observed contract file & logs
             payload["instrumentId"] = str(symbol)
         else:
-            payload["symbol"] = str(symbol).upper()
+            # Resolve symbol to instrumentId - no symbol fallback
+            local_map = self._load_normalized_contract_map()
+            mapped = self._resolve_instrument_id_with_variants(symbol, local_map)
+            if mapped:
+                payload["instrumentId"] = str(mapped)
+            else:
+                logger.warning(f"Could not resolve symbol {symbol} to instrumentId - instrumentId-only mode")
+                return None
 
         trading_logger.log_system_event("iifl_hist_attempt", {
             "attempt": 1,
@@ -799,22 +808,12 @@ class IIFLAPIService:
         return await self._make_api_request("POST", "/marketdata/historicaldata", payload)
     
     async def get_market_quotes(self, instruments: List[str]) -> Optional[Dict]:
-        """Get real-time market quotes"""
+        """Get real-time market quotes (instrumentId only)"""
         # Ensure all instruments are strings
         instrument_strs = [str(instr) for instr in instruments]
 
-        # Check if instrumentId-only enforcement is enabled via env var
-        instrumentid_only = str(os.getenv("IIFL_INSTRUMENTID_ONLY", "True")).lower() in ("1", "true", "yes")
-
-        # Try to load local contract map if present (data/contracts_nseeq.json)
-        local_map: Dict[str, str] = {}
-        try:
-            local_path = os.path.join(os.getcwd(), "data", "contracts_nseeq.json")
-            if os.path.exists(local_path):
-                with open(local_path, "r", encoding="utf-8") as f:
-                    local_map = {k.upper(): str(v) for k, v in json.load(f).items()}
-        except Exception:
-            local_map = {}
+        # Load normalized contract map with variant matching
+        local_map = self._load_normalized_contract_map()
 
         try:
             raw_obj_list = []
@@ -824,77 +823,42 @@ class IIFLAPIService:
                 if str(s).isdigit():
                     obj["instrumentId"] = str(int(s))
                 else:
-                    mapped = local_map.get(str(s).upper())
+                    mapped = self._resolve_instrument_id_with_variants(s, local_map)
                     if mapped:
                         obj["instrumentId"] = str(mapped)
                     else:
-                        if instrumentid_only:
-                            skipped.append(s)
-                            continue
-                        else:
-                            obj["tradingSymbol"] = str(s)
+                        skipped.append(s)
+                        continue
                 raw_obj_list.append(obj)
 
             if not raw_obj_list:
                 logger.warning(f"No valid instrumentId resolved for marketquotes; skipped={skipped}")
                 return None
 
-            logger.debug(f"Trying raw-array marketquotes payload (minimal): {raw_obj_list}")
+            logger.debug(f"Trying instrumentId-only marketquotes payload: {raw_obj_list}")
             resp = await self._make_api_request("POST", "/marketdata/marketquotes", raw_obj_list)
-            if resp is not None:
-                return resp
-
-            # If instrumentId-only enforced, avoid the slow/minimal fallback to reduce failing calls
-            if instrumentid_only:
-                logger.warning("InstrumentId-only mode enabled and marketquotes raw-array returned None; aborting without fallback")
-                return None
+            return resp
 
         except Exception as e:
-            logger.debug(f"raw-array marketquotes attempt failed: {e}")
-
-        # Second (and final) attempt: single JSON object with 'instruments' key (legacy fallback)
-        try:
-            minimal_payload = {"instruments": instrument_strs}
-            logger.debug(f"Trying minimal marketquotes payload: {minimal_payload}")
-            resp = await self._make_api_request("POST", "/marketdata/marketquotes", minimal_payload)
-            if resp is not None:
-                return resp
-        except Exception as e:
-            logger.debug(f"minimal marketquotes attempt failed: {e}")
-
-        logger.error(f"Marketquotes minimal attempts failed for instruments={instrument_strs}")
-        return None
+            logger.error(f"InstrumentId-only marketquotes failed: {e}")
+            return None
     
     async def get_market_depth(self, instrument: str) -> Optional[Dict]:
-        """Get market depth for an instrument"""
-        # The provider expects an object that indicates exchange + either a numeric
-        # instrumentId or a tradingSymbol. Normalize here to avoid callers having
-        # to guess the correct field name.
+        """Get market depth for an instrument (instrumentId only)"""
         try:
             payload: Dict[str, str] = {"exchange": "NSEEQ"}
-            instrumentid_only = str(os.getenv("IIFL_INSTRUMENTID_ONLY", "True")).lower() in ("1", "true", "yes")
+            
             if str(instrument).isdigit():
                 payload["instrumentId"] = str(int(instrument))
             else:
-                # try local contract map when available
-                try:
-                    local_path = os.path.join(os.getcwd(), "data", "contracts_nseeq.json")
-                    if os.path.exists(local_path):
-                        with open(local_path, "r", encoding="utf-8") as f:
-                            local_map = {k.upper(): str(v) for k, v in json.load(f).items()}
-                            mapped = local_map.get(str(instrument).upper())
-                            if mapped:
-                                payload["instrumentId"] = str(mapped)
-                            elif instrumentid_only:
-                                logger.warning(f"InstrumentId-only mode: could not resolve {instrument} to id for market depth")
-                                return None
-                            else:
-                                payload["tradingSymbol"] = str(instrument)
-                except Exception:
-                    if instrumentid_only:
-                        logger.warning(f"InstrumentId-only mode and local map unavailable; cannot resolve {instrument}")
-                        return None
-                    payload["tradingSymbol"] = str(instrument)
+                # Resolve symbol to instrumentId using variant matching
+                local_map = self._load_normalized_contract_map()
+                mapped = self._resolve_instrument_id_with_variants(instrument, local_map)
+                if mapped:
+                    payload["instrumentId"] = str(mapped)
+                else:
+                    logger.warning(f"Could not resolve {instrument} to instrumentId for market depth")
+                    return None
 
             return await self._make_api_request("POST", "/marketdata/marketdepth", payload)
         except Exception as e:
@@ -949,7 +913,58 @@ class IIFLAPIService:
         except:
             return False
     
-    async def force_auth_code_refresh(self) -> bool:
+    def _resolve_instrument_id_with_variants(self, symbol: str, local_map: Dict[str, str]) -> Optional[str]:
+        """Resolve symbol to instrumentId using same logic as DataFetcher for consistency"""
+        if not symbol:
+            return None
+        base_symbol = str(symbol).upper().strip()
+        simple_base = ''.join(ch for ch in base_symbol if ch.isalnum())
+        base_part = base_symbol.split("-", 1)[0] if "-" in base_symbol else base_symbol
+        
+        candidates = [
+            base_symbol, base_part, f"{base_part}-EQ", f"{base_part}-BE", f"{base_part}-SM"
+        ]
+        if simple_base:
+            candidates.append(simple_base)
+            candidates.append(f"{simple_base}EQ")
+        
+        # Try candidates in order
+        for candidate in candidates:
+            if candidate in local_map:
+                return str(local_map[candidate])
+        
+        # Fallback: contains match
+        for k, v in local_map.items():
+            ku = k.upper()
+            if simple_base and simple_base in ''.join(ch for ch in ku if ch.isalnum()):
+                return str(v)
+            if base_part and base_part in ku:
+                return str(v)
+        return None
+
+    def _load_normalized_contract_map(self) -> Dict[str, str]:
+        """Load and normalize contract map with same logic as DataFetcher"""
+        local_map: Dict[str, str] = {}
+        try:
+            local_path = os.path.join(os.getcwd(), "data", "contracts_nseeq.json")
+            if os.path.exists(local_path):
+                with open(local_path, "r", encoding="utf-8") as f:
+                    file_data = json.load(f)
+                    for k, v in file_data.items():
+                        try:
+                            kk = str(k).upper().strip()
+                            local_map[kk] = str(v)
+                            # Also store alnum-only variant
+                            simple = ''.join(ch for ch in kk if ch.isalnum())
+                            if simple and simple not in local_map:
+                                local_map[simple] = str(v)
+                        except Exception:
+                            continue
+        except Exception:
+            pass
+        return local_map
+
+    async def force_auth_code_refresh(self) -> dict:
         """Force refresh of auth code from env file"""
         logger.info("Refreshing auth code from env file")
         

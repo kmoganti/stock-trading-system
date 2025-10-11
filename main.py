@@ -1,16 +1,27 @@
+# Standard library imports
 import asyncio
+import json
 import logging
+import os
+import time
+from contextlib import asynccontextmanager
+
+# Third-party imports
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from contextlib import asynccontextmanager
-import time
-import json
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
+# Local imports
 from config.settings import get_settings
 from models.database import init_db, close_db
+from services.logging_service import trading_logger
+
+# API routers
 from api import (
     system_router, signals_router, portfolio_router, 
     risk_router, reports_router, backtest_router, settings_router, events_router
@@ -18,19 +29,10 @@ from api import (
 from api.margin import router as margin_router
 from api.auth_management import router as auth_router
 from api.watchlist import router as watchlist_router
+from api.scheduler import router as scheduler_router
 
-# Import and configure logging service
-from services.logging_service import trading_logger
-import os
-from telegram_bot.bot import TelegramBot
-from telegram_bot.handlers import setup_handlers
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from services.iifl_api import IIFLAPIService
-from services.screener import ScreenerService
-from services.watchlist import WatchlistService
-from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.interval import IntervalTrigger
-from services.data_fetcher import DataFetcher
+# Services scheduler for global access
+from services.scheduler import get_trading_scheduler
 
 # Ensure logs directory exists
 os.makedirs('logs', exist_ok=True)
@@ -82,6 +84,8 @@ async def lifespan(app: FastAPI):
         telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
         settings_for_telegram = get_settings()
         if telegram_token and telegram_chat_id and getattr(settings_for_telegram, "telegram_bot_enabled", False):
+            from telegram_bot.bot import TelegramBot
+            from telegram_bot.handlers import setup_handlers
             bot = TelegramBot()
             await setup_handlers(bot)
             await bot.start()
@@ -98,6 +102,9 @@ async def lifespan(app: FastAPI):
         from models.database import AsyncSessionLocal
 
         # Authenticate first to get a token
+        from services.iifl_api import IIFLAPIService
+        from services.watchlist import WatchlistService  
+        from services.screener import ScreenerService
         iifl_service = IIFLAPIService()
         if await iifl_service.authenticate() and not iifl_service.session_token.startswith("mock_"):
             async with AsyncSessionLocal() as session:
@@ -113,6 +120,7 @@ async def lifespan(app: FastAPI):
     
     # One-time daily refresh of portfolio and margin caches at startup to avoid repeated calls
     try:
+        from services.data_fetcher import DataFetcher
         iifl_for_cache = IIFLAPIService()
         fetcher_for_cache = DataFetcher(iifl_for_cache)
         await fetcher_for_cache.get_portfolio_data(force_refresh=True)
@@ -162,6 +170,15 @@ async def lifespan(app: FastAPI):
             scheduler.start()
             app.state.scheduler = scheduler
             logger.info("Scheduler started for housekeeping and screening tasks")
+            
+            # Start the trading strategy scheduler if enabled
+            try:
+                trading_scheduler = get_trading_scheduler()
+                await trading_scheduler.start()
+                app.state.trading_scheduler = trading_scheduler
+                logger.info("🚀 Trading strategy scheduler started successfully")
+            except Exception as e:
+                logger.warning(f"Failed to start trading strategy scheduler: {str(e)}")
         else:
             logger.info("Scheduler disabled by configuration (ENABLE_SCHEDULER=false)")
     except Exception as e:
@@ -190,6 +207,12 @@ async def lifespan(app: FastAPI):
             logger.info("Scheduler stopped")
     except Exception as e:
         logger.error(f"Error stopping scheduler: {str(e)}")
+    try:
+        if getattr(app.state, "trading_scheduler", None):
+            await app.state.trading_scheduler.stop()
+            logger.info("🛑 Trading strategy scheduler stopped")
+    except Exception as e:
+        logger.error(f"Error stopping trading scheduler: {str(e)}")
     await close_db()
     logger.info("Database connections closed")
     trading_logger.log_system_event("database_closed")
@@ -232,6 +255,7 @@ app.include_router(events_router)
 app.include_router(auth_router)
 app.include_router(watchlist_router)
 app.include_router(margin_router, prefix="/api/margin", tags=["margin"])
+app.include_router(scheduler_router, prefix="/api", tags=["scheduler"])
 
 # HTTP logging middleware
 @app.middleware("http")

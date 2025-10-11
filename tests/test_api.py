@@ -36,40 +36,28 @@ class TestSystemAPI:
     
     def test_system_status(self):
         """Test system status endpoint"""
-        with patch('api.system.get_system_status') as mock_status:
-            mock_status.return_value = {
-                "status": "running",
-                "auto_trade": False,
-                "iifl_api_connected": True,
-                "database_connected": True,
-                "environment": "test"
-            }
-            
-            response = client.get("/api/system/status")
-            assert response.status_code == 200
-            data = response.json()
-            assert data["status"] == "running"
-            assert "auto_trade" in data
+        response = client.get("/api/system/status")
+        assert response.status_code == 200
+        data = response.json()
+        assert "auto_trade" in data
+        assert "environment" in data
+        assert "timestamp" in data
     
     def test_system_halt(self):
         """Test system halt endpoint"""
-        with patch('api.system.halt_system') as mock_halt:
-            mock_halt.return_value = {"success": True, "message": "System halted"}
-            
-            response = client.post("/api/system/halt")
-            assert response.status_code == 200
-            data = response.json()
-            assert data["success"] is True
+        response = client.post("/api/system/halt")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["message"] == "Trading halted successfully"
+        assert data["status"] == "halted"
     
     def test_system_resume(self):
         """Test system resume endpoint"""
-        with patch('api.system.resume_system') as mock_resume:
-            mock_resume.return_value = {"success": True, "message": "System resumed"}
-            
-            response = client.post("/api/system/resume")
-            assert response.status_code == 200
-            data = response.json()
-            assert data["success"] is True
+        response = client.post("/api/system/resume")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["message"] == "Trading resumed successfully"
+        assert data["status"] == "active"
 
 class TestSignalsAPI:
     """Test signals API endpoints"""

@@ -7,6 +7,7 @@ from sqlalchemy import select, func
 from models.pnl_reports import PnLReport
 from models.signals import Signal, SignalStatus
 from .data_fetcher import DataFetcher
+from .enhanced_logging import critical_events, log_operation
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ class PnLService:
         self.data_fetcher = data_fetcher
         self.db = db_session
         self.daily_start_equity = 0.0
+        self._memory_reports: Dict[date, PnLReport] = {}  # For test mode when no DB
     
     async def initialize_daily_tracking(self):
         """Initialize daily P&L tracking"""
@@ -67,9 +69,17 @@ class PnLService:
                 drawdown = max(0, (self.daily_start_equity - current_equity) / self.daily_start_equity)
             
             # Update or create daily report
-            report = await self._get_or_create_daily_report(today) if self.db else PnLReport(date=today)
+            if self.db:
+                report = await self._get_or_create_daily_report(today)
+            else:
+                # For test mode, use in-memory storage
+                if today not in self._memory_reports:
+                    self._memory_reports[today] = PnLReport(date=today)
+                report = self._memory_reports[today]
             
-            report.daily_pnl = current_pnl
+            # Calculate daily PnL as realized + unrealized - fees
+            calculated_daily_pnl = (realized_pnl or 0.0) + (unrealized_pnl or 0.0) - (fees or 0.0)
+            report.daily_pnl = calculated_daily_pnl
             report.realized_pnl = realized_pnl
             report.unrealized_pnl = unrealized_pnl
             report.total_trades = trade_stats['total_trades']
@@ -92,6 +102,22 @@ class PnLService:
             
             if self.db:
                 await self.db.commit()
+            
+            # Log P&L update
+            critical_events.log_pnl_update(
+                date=today.strftime('%Y-%m-%d'),
+                daily_pnl=report.daily_pnl,
+                cumulative_pnl=report.cumulative_pnl,
+                total_trades=report.total_trades,
+                realized_pnl=report.realized_pnl,
+                unrealized_pnl=report.unrealized_pnl,
+                fees=report.fees,
+                starting_equity=report.starting_equity,
+                ending_equity=report.ending_equity,
+                drawdown=report.drawdown,
+                winning_trades=report.winning_trades,
+                losing_trades=report.losing_trades
+            )
             
             logger.info(f"Daily P&L updated: ₹{current_pnl:,.2f}")
             
@@ -248,23 +274,34 @@ class PnLService:
             target_date = date.today()
         
         try:
-            stmt = select(PnLReport).where(PnLReport.date == target_date)
-            result = await self.db.execute(stmt)
-            report = result.scalar_one_or_none()
-            
-            if report:
-                return report.to_dict()
+            if self.db:
+                stmt = select(PnLReport).where(PnLReport.date == target_date)
+                result = await self.db.execute(stmt)
+                report = result.scalar_one_or_none()
+                
+                if report:
+                    return report.to_dict()
             else:
-                return {
-                    "date": target_date.isoformat(),
-                    "daily_pnl": 0.0,
-                    "cumulative_pnl": 0.0,
-                    "message": "No report found for this date"
-                }
+                # For test mode, check in-memory storage
+                if target_date in self._memory_reports:
+                    return self._memory_reports[target_date].to_dict()
+            
+            # No report found
+            return {
+                "date": target_date.isoformat(),
+                "daily_pnl": 0.0,
+                "cumulative_pnl": 0.0,
+                "message": "No report found for this date"
+            }
                 
         except Exception as e:
             logger.error(f"Error getting daily report: {str(e)}")
-            return {"error": str(e)}
+            return {
+                "error": str(e),
+                "date": target_date.isoformat(),
+                "daily_pnl": 0.0,
+                "cumulative_pnl": 0.0
+            }
     
     async def get_period_summary(self, start_date: date, end_date: date) -> Dict[str, Any]:
         """Get P&L summary for a period"""
@@ -397,6 +434,37 @@ class PnLService:
             logger.error(f"Error calculating performance metrics: {str(e)}")
             return {"error": str(e)}
     
+    async def calculate_portfolio_pnl(self, positions: List[Dict]) -> float:
+        """Calculate total P&L for a portfolio of positions"""
+        try:
+            total_pnl = 0.0
+            
+            for position in positions:
+                symbol = position.get('symbol', '')
+                quantity = position.get('quantity', 0)
+                avg_price = position.get('avg_price', 0.0)
+                current_price = position.get('current_price', 0.0)
+                
+                # If current_price is not provided, try to get live price
+                if current_price == 0.0 and symbol and self.data_fetcher:
+                    try:
+                        current_price = await self.data_fetcher.get_live_price(symbol)
+                    except Exception as e:
+                        logger.warning(f"Could not get live price for {symbol}: {e}")
+                        continue
+                
+                # Calculate P&L for this position
+                position_pnl = quantity * (current_price - avg_price)
+                total_pnl += position_pnl
+                
+                logger.debug(f"Position P&L for {symbol}: {quantity} @ {avg_price} -> {current_price} = {position_pnl}")
+            
+            return total_pnl
+            
+        except Exception as e:
+            logger.error(f"Error calculating portfolio P&L: {str(e)}")
+            return 0.0
+
     def _calculate_profit_factor(self, reports: List[Dict]) -> float:
         """Calculate profit factor"""
         try:
@@ -413,3 +481,35 @@ class PnLService:
         except Exception as e:
             logger.error(f"Error calculating profit factor: {str(e)}")
             return 0.0
+    
+    async def get_monthly_summary(self, year: int, month: int) -> Dict[str, Any]:
+        """Get monthly P&L summary"""
+        try:
+            # Calculate start and end dates for the month
+            from calendar import monthrange
+            start_date = date(year, month, 1)
+            _, last_day = monthrange(year, month)
+            end_date = date(year, month, last_day)
+            
+            # Get period summary for the month
+            summary = await self.get_period_summary(start_date, end_date)
+            
+            # Add monthly-specific metrics
+            summary.update({
+                "year": year,
+                "month": month,
+                "month_name": start_date.strftime("%B %Y"),
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat()
+            })
+            
+            return summary
+            
+        except Exception as e:
+            logger.error(f"Error getting monthly summary: {str(e)}")
+            return {
+                "error": str(e),
+                "year": year,
+                "month": month,
+                "total_pnl": 0.0
+            }

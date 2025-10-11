@@ -6,6 +6,7 @@ alembic
 
 # HTTP client
 httpx
+aiohttp
 requests
 
 # Data and analysis
@@ -36,7 +37,12 @@ pytest-asyncio
 sentry-sdk
 python-telegram-bot
 apscheduler
+pytz
 
 # Reporting
 reportlab
 matplotlib
+
+# Enhanced Logging and Monitoring
+watchdog
+psutil
