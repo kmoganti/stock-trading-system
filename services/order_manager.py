@@ -9,6 +9,7 @@ from models.risk_events import RiskEvent, RiskEventType
 from .iifl_api import IIFLAPIService
 from .risk import RiskService
 from .data_fetcher import DataFetcher
+from .enhanced_logging import critical_events, log_operation, log_trade_execution
 from config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -467,6 +468,7 @@ class OrderManager:
             return None
 
     # Simple compat methods for tests
+    @log_trade_execution
     async def place_order(self, signal: Dict) -> Dict:
         """Compat: Place order directly via IIFL for tests."""
         try:
@@ -476,10 +478,57 @@ class OrderManager:
                 "price": signal.get("price"),
                 "order_type": "BUY" if (signal.get("signal_type") in ("buy", "BUY")) else "SELL"
             }
+            
+            # Log order placement attempt
+            critical_events.log_order_execution(
+                order_id=f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                symbol=order_data["symbol"],
+                side=order_data["order_type"],
+                quantity=order_data["quantity"],
+                price=order_data["price"],
+                status="PLACING",
+                strategy="direct_placement"
+            )
+            
             result = await self.iifl.place_order(order_data)
+            
+            # Log order result
+            if result and result.get("Success"):
+                critical_events.log_order_execution(
+                    order_id=result.get("order_id", "unknown"),
+                    symbol=order_data["symbol"],
+                    side=order_data["order_type"],
+                    quantity=order_data["quantity"],
+                    price=order_data["price"],
+                    status="EXECUTED",
+                    strategy="direct_placement",
+                    broker_response=result
+                )
+            else:
+                critical_events.log_order_execution(
+                    order_id="unknown",
+                    symbol=order_data["symbol"],
+                    side=order_data["order_type"],
+                    quantity=order_data["quantity"],
+                    price=order_data["price"],
+                    status="FAILED",
+                    strategy="direct_placement",
+                    error=result.get("Message", "Unknown error") if result else "No response"
+                )
+            
             return result or {}
         except Exception as e:
             logger.error(f"Compat place_order failed: {str(e)}")
+            critical_events.log_order_execution(
+                order_id="unknown",
+                symbol=signal.get("symbol", "unknown"),
+                side="BUY" if signal.get("signal_type") in ("buy", "BUY") else "SELL",
+                quantity=signal.get("quantity", 0),
+                price=signal.get("price", 0),
+                status="ERROR",
+                strategy="direct_placement",
+                error=str(e)
+            )
             return {}
 
     async def cancel_order(self, order_id: str) -> Dict:

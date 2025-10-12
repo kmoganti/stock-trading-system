@@ -10,29 +10,47 @@ import os
 from datetime import timedelta
 try:
     from config.settings import get_settings  # type: ignore
+    from .optimized_logging import setup_optimized_logging, log_performance, log_async_performance  # type: ignore
+    HAS_OPTIMIZED_LOGGING = True
 except Exception:
+    HAS_OPTIMIZED_LOGGING = False
     def get_settings():
         class _S:
             log_retention_days = 14
         return _S()
 
 class TradingLogger:
-    """Centralized logging service for the trading system"""
+    """Centralized logging service for the trading system with optimization support"""
     
     def __init__(self, log_dir: str = "logs"):
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(exist_ok=True)
+        self.settings = get_settings()
         
-        # Create different loggers for different components
-        self.main_logger = self._setup_logger("main", "trading_system.log")
-        self.trade_logger = self._setup_logger("trades", "trades.log")
-        self.risk_logger = self._setup_logger("risk", "risk_events.log")
-        self.api_logger = self._setup_logger("api", "api_calls.log")
-        self.error_logger = self._setup_logger("errors", "errors.log", level=logging.ERROR)
+        # Try to use optimized logging if available
+        if HAS_OPTIMIZED_LOGGING and hasattr(self.settings, 'enable_performance_logging'):
+            self.optimized_loggers = setup_optimized_logging(self.settings)
+            self.use_optimized = True
+            
+            # Map to optimized loggers
+            self.main_logger = self.optimized_loggers.get('trading.main', self._setup_fallback_logger("main", "trading_system.log"))
+            self.trade_logger = self.optimized_loggers.get('trading.trades', self._setup_fallback_logger("trades", "trades.log"))
+            self.risk_logger = self.optimized_loggers.get('trading.risk', self._setup_fallback_logger("risk", "risk_events.log"))
+            self.api_logger = self.optimized_loggers.get('trading.api', self._setup_fallback_logger("api", "api_calls.log"))
+            self.error_logger = self._setup_fallback_logger("errors", "errors.log", level=logging.ERROR)
+        else:
+            # Fallback to original logging
+            self.use_optimized = False
+            self.main_logger = self._setup_fallback_logger("main", "trading_system.log")
+            self.trade_logger = self._setup_fallback_logger("trades", "trades.log")
+            self.risk_logger = self._setup_fallback_logger("risk", "risk_events.log")
+            self.api_logger = self._setup_fallback_logger("api", "api_calls.log")
+            self.error_logger = self._setup_fallback_logger("errors", "errors.log", level=logging.ERROR)
+        
         self._sentry_enabled = False
         self._telegram_notify = None
     
-    def _setup_logger(self, name: str, filename: str, level: int = logging.INFO) -> logging.Logger:
+    def _setup_fallback_logger(self, name: str, filename: str, level: int = logging.INFO) -> logging.Logger:
         """Setup individual logger with rotating file handler"""
         logger = logging.getLogger(f"trading.{name}")
         logger.setLevel(level)
@@ -178,6 +196,31 @@ class TradingLogger:
                 self.main_logger.info(f"Housekeeping pruned logs: {removed}")
         except Exception as e:
             self.error_logger.error(f"Housekeeping error: {str(e)}")
+    
+    def log_performance_metric(self, operation: str, duration_ms: float, **context):
+        """Log performance metrics with optimization awareness."""
+        if self.use_optimized and hasattr(self.settings, 'enable_performance_logging'):
+            if self.settings.enable_performance_logging and duration_ms >= self.settings.performance_threshold_ms:
+                self.main_logger.info(
+                    f"Performance: {operation} took {duration_ms:.2f}ms",
+                    extra={
+                        'operation': operation,
+                        'duration_ms': duration_ms,
+                        'performance_metric': True,
+                        **context
+                    }
+                )
+        else:
+            # Fallback performance logging
+            if duration_ms >= 1000:  # Default threshold
+                self.main_logger.info(f"Performance: {operation} took {duration_ms:.2f}ms")
+    
+    def get_optimized_logger(self, component: str) -> logging.Logger:
+        """Get optimized logger for specific component."""
+        if self.use_optimized:
+            return self.optimized_loggers.get(f'trading.{component}', self.main_logger)
+        else:
+            return getattr(self, f'{component}_logger', self.main_logger)
 
 # Global logger instance
 trading_logger = TradingLogger()

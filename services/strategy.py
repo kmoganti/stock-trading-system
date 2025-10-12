@@ -7,6 +7,7 @@ from .watchlist import WatchlistService
 from models.signals import Signal, SignalType, SignalStatus
 from config.settings import get_settings
 from dataclasses import dataclass
+from .enhanced_logging import critical_events, log_operation, log_signal_processing
 
 # Logger for this module
 logger = logging.getLogger(__name__)
@@ -237,7 +238,7 @@ class StrategyService:
             # Check for bullish crossover (9 EMA crosses above 21 EMA)
             is_bullish_crossover = previous['ema_9'] <= previous['ema_21'] and current['ema_9'] > current['ema_21']
             is_uptrend = current['close'] > current['ema_50']
-            has_volume = current['volume_ratio'] > 0.9  # Relaxed volume confirmation
+            has_volume = current['volume_ratio'] > self.settings.volume_confirmation_multiplier  # Configurable volume confirmation
             
             if is_bullish_crossover and is_uptrend and has_volume and current['rsi'] < 70:
                 # Volatility-adjusted stop-loss and take-profit using ATR
@@ -307,9 +308,10 @@ class StrategyService:
             current = df.iloc[-1]
             
             # Buy when price touches lower band and RSI is oversold
+            volume_multiplier = getattr(self.settings, 'volume_confirmation_multiplier', 0.8) * 1.4  # Higher volume for mean reversion
             if (current['close'] <= current['bb_lower'] and 
                 current['rsi'] < 30 and 
-                current['volume_ratio'] > 1.1):  # Relaxed high volume confirmation
+                current['volume_ratio'] > volume_multiplier):
                 
                 return TradingSignal(
                     symbol=symbol,
@@ -327,10 +329,10 @@ class StrategyService:
                     }
                 )
             
-            # Sell when price touches upper band and RSI is overbought
+            # Sell when price touches upper band and RSI is overbought  
             elif (current['close'] >= current['bb_upper'] and 
                   current['rsi'] > 70 and 
-                  current['volume_ratio'] > 1.1):
+                  current['volume_ratio'] > volume_multiplier):
                 
                 return TradingSignal(
                     symbol=symbol,
@@ -370,12 +372,13 @@ class StrategyService:
             current = df.iloc[-1]
             previous = df.iloc[-2]
             
-            has_volume = current['volume_ratio'] > 0.95 # Relaxed volume confirmation
+            has_volume = current['volume_ratio'] > self.settings.volume_confirmation_multiplier
+            momentum_threshold = getattr(self.settings, 'momentum_threshold', 0.015)
             
             # Bullish momentum: MACD crosses above signal line with strong momentum
             if (previous['macd'] <= previous['macd_signal'] and
                 current['macd'] > current['macd_signal'] and
-                current['price_momentum'] > 0.015 and  # Relaxed to 1.5% momentum
+                current['price_momentum'] > momentum_threshold and  # Configurable momentum threshold
                 has_volume and current['rsi'] > 40 and current['rsi'] < 70):
                 
                 return TradingSignal(
@@ -398,7 +401,7 @@ class StrategyService:
             # Bearish momentum: MACD crosses below signal line with negative momentum
             elif (previous['macd'] >= previous['macd_signal'] and
                   current['macd'] < current['macd_signal'] and
-                  current['price_momentum'] < -0.015 and  # Relaxed to -1.5% momentum
+                  current['price_momentum'] < -momentum_threshold and  # Configurable negative momentum threshold
                   has_volume and current['rsi'] > 30 and current['rsi'] < 60):
                 
                 return TradingSignal(
@@ -450,9 +453,10 @@ class StrategyService:
                 if signal.target_price >= signal.entry_price:
                     return False
             
-            # Check confidence level
-            if signal.confidence < 0.5:
-                logger.debug(f"Validation failed: confidence {signal.confidence} < 0.5")
+            # Check confidence level (using configurable threshold)
+            min_confidence = getattr(self.settings, 'min_confidence_threshold', 0.65)
+            if signal.confidence < min_confidence:
+                logger.debug(f"Validation failed: confidence {signal.confidence} < {min_confidence}")
                 return False
             
             # Get current market data for additional validation
@@ -501,6 +505,7 @@ class StrategyService:
             if category in self._watchlist_by_category:
                 self._watchlist_by_category[category] = [s for s in self._watchlist_by_category[category] if s not in [sym.upper() for sym in symbols]]
 
+    @log_signal_processing
     async def generate_signals(
         self, symbol: str, category: str = "short_term", strategy_name: Optional[str] = None
     ) -> List[TradingSignal]:
@@ -568,12 +573,26 @@ class StrategyService:
                 if basic_signal:
                     signals.append(basic_signal)
             
-            # Filter signals
+            # Filter signals and log generation
             filtered_signals = []
             for signal in signals:
                 if await self._validate_signal(signal, data):
                     filtered_signals.append(signal)
+                    
+                    # Log signal generation
+                    critical_events.log_signal_generation(
+                        signal_id=f"signal_{symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                        symbol=signal.symbol,
+                        signal_type=signal.signal_type,
+                        confidence=getattr(signal, 'confidence', 0.0),
+                        strategy=getattr(signal, 'strategy_name', strategy_name or category or 'unknown'),
+                        entry_price=getattr(signal, 'entry_price', 0.0),
+                        stop_loss=getattr(signal, 'stop_loss', 0.0),
+                        target=getattr(signal, 'target', 0.0),
+                        category=category
+                    )
             
+            logger.info(f"Generated {len(filtered_signals)} signals for {symbol} ({category})")
             return filtered_signals
             
         except Exception as e:
@@ -674,6 +693,38 @@ class StrategyService:
             logger.error(f"Error calculating position size: {str(e)}")
             return 1
     
+    async def momentum_strategy(self, symbol: str, historical_data: List[Dict]) -> Optional[Dict]:
+        """Public interface for momentum strategy - converts historical data to dataframe and calls internal method"""
+        try:
+            if not historical_data or len(historical_data) < 3:
+                return None
+                
+            if HAS_PANDAS:
+                df = pd.DataFrame(historical_data)
+                indicators = self.calculate_indicators(df)
+                signal = self._momentum_strategy(indicators, symbol)
+            else:
+                indicators = self._calculate_basic_indicators(historical_data)
+                signal = self._basic_trend_strategy(indicators, symbol)
+            
+            # Convert TradingSignal to dict format expected by tests
+            if signal:
+                return {
+                    "signal_type": signal.signal_type.value,
+                    "symbol": signal.symbol,
+                    "entry_price": signal.entry_price,
+                    "stop_loss": signal.stop_loss,
+                    "target_price": signal.target_price,
+                    "confidence": signal.confidence,
+                    "strategy": signal.strategy,
+                    "metadata": signal.metadata
+                }
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error in public momentum strategy for {symbol}: {str(e)}")
+            return None
+
     def get_exit_signals(self, positions: List[Dict]) -> List[Dict]:
         """Generate exit signals for existing positions"""
         exit_signals = []

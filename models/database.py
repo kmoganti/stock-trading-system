@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy import MetaData, text
 import os
 from typing import AsyncGenerator
@@ -22,8 +22,9 @@ AsyncSessionLocal = async_sessionmaker(
     expire_on_commit=False
 )
 
-# Create base class for models
-Base = declarative_base()
+# Create base class for models using modern SQLAlchemy 2.0+ pattern
+class Base(DeclarativeBase):
+    pass
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Dependency to get database session"""
