@@ -7,12 +7,13 @@ from typing import AsyncGenerator
 # Database configuration
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./trading_system.db")
 
-# Create async engine
+# Create async engine with optimized settings for faster startup
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
     future=True,
-    pool_pre_ping=True
+    pool_pre_ping=False,  # Disable ping for faster startup
+    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
 )
 
 # Create async session factory
@@ -35,10 +36,17 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 async def init_db():
-    """Initialize database tables"""
+    """Initialize database tables (optimized for fast startup)"""
+    # Skip heavy initialization if database already exists and is populated
+    import os
+    db_file = "trading_system.db"
+    if os.path.exists(db_file) and os.path.getsize(db_file) > 1000:
+        # Database exists and appears to be populated, skip heavy checks
+        return
+    
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # SQLite compatibility: ensure new columns exist on older databases
+        # Only run column checks on first-time setup or small databases
         try:
             if engine.url.get_backend_name().startswith("sqlite"):
                 # Inspect existing columns

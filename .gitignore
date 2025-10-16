@@ -27,8 +27,12 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# Environments
+# Environment files
 .env
+.env.local
+.env.development
+.env.testing
+.env.production
 .venv
 env/
 venv/
@@ -45,4 +49,18 @@ reports/
 
 # Ignore the data folder but keep the nifty 100 list
 data/*
-!data/ind_nifty100list.csv
+!data/ind_nifty100list.csv# Security-sensitive files
+.env.production
+.env.local
+*.key
+*.pem
+*.p12
+*.pfx
+security_validation_report.md
+ssl/
+certificates/
+backups/
+*.backup
+
+# Consolidated environment - removed duplicate env files:
+# .env.logging.example, .env.optimized, .env.scheduler.example, .env.production.template
