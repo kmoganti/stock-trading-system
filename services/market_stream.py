@@ -1,3 +1,4 @@
+import os
 import asyncio
 import logging
 import struct
@@ -86,7 +87,7 @@ class MarketStreamService:
             return
 
         try:
-            # Allow overriding the bridge port via environment variable for easy updates
+            # BridgePy plugin requires port 8883 for IIFL market stream
             bridge_port = int(os.getenv("IIFL_BRIDGE_PORT", "8883"))
             conn_req = f'{{"host": "bridge.iiflcapital.com", "port": {bridge_port}, "token": "{session_token}"}}'
             self.connection.connect_host(conn_req)

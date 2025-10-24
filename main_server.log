@@ -1,0 +1,26 @@
+nohup: ignoring input
+INFO:     Will watch for changes in these directories: ['/workspaces/stock-trading-system']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [33391] using WatchFiles
+INFO:     Started server process [33416]
+INFO:     Waiting for application startup.
+2025-10-16 06:31:50 - trading.main - INFO - SYSTEM: {"timestamp": "2025-10-16T06:31:50.081725", "event": "application_startup", "details": {"version": "1.0.0"}}
+2025-10-16 06:31:50 - trading.main - INFO - SYSTEM: {"timestamp": "2025-10-16T06:31:50.082062", "event": "database_initialized", "details": {}}
+INFO:     Application startup complete.
+2025-10-16 06:32:17 - trading.api - INFO - API: {"timestamp": "2025-10-16T06:32:17.100811", "endpoint": "/", "method": "HEAD", "status_code": 405, "response_time_ms": 0.3299649997643428, "error": null, "request_body": null}
+INFO:     127.0.0.1:38754 - "HEAD / HTTP/1.1" 405 Method Not Allowed
+2025-10-16 06:32:54 - trading.api - INFO - API: {"timestamp": "2025-10-16T06:32:54.983326", "endpoint": "/api/system/status", "method": "GET", "status_code": 200, "response_time_ms": 13.102800000069692, "error": null, "request_body": null}
+INFO:     127.0.0.1:59312 - "GET /api/system/status HTTP/1.1" 200 OK
+2025-10-16 06:34:57 - trading.api - INFO - API: {"timestamp": "2025-10-16T06:34:57.679278", "endpoint": "/", "method": "GET", "status_code": 200, "response_time_ms": 10.593931000130397, "error": null, "request_body": null}
+INFO:     127.0.0.1:37562 - "GET / HTTP/1.1" 200 OK
+2025-10-16 06:35:02 - trading.api - INFO - API: {"timestamp": "2025-10-16T06:35:02.382117", "endpoint": "/api/system/status", "method": "GET", "status_code": 200, "response_time_ms": 2.0015430000057677, "error": null, "request_body": null}
+INFO:     127.0.0.1:37562 - "GET /api/system/status HTTP/1.1" 200 OK
+2025-10-16 06:35:02 - trading.main - INFO - SYSTEM: {"timestamp": "2025-10-16T06:35:02.455832", "event": "iifl_api_request", "details": {"method": "GET", "url": "https://api.iiflcapital.com/v1/limits", "endpoint": "/limits", "has_bearer_token": true, "data_keys": []}}
+2025-10-16 06:35:02 - trading.main - INFO - SYSTEM: {"timestamp": "2025-10-16T06:35:02.457328", "event": "iifl_api_request", "details": {"method": "GET", "url": "https://api.iiflcapital.com/v1/holdings", "endpoint": "/holdings", "has_bearer_token": true, "data_keys": []}}
+2025-10-16 06:35:02 - trading.main - INFO - SYSTEM: {"timestamp": "2025-10-16T06:35:02.459797", "event": "iifl_api_request", "details": {"method": "GET", "url": "https://api.iiflcapital.com/v1/positions", "endpoint": "/positions", "has_bearer_token": true, "data_keys": []}}
+2025-10-16 06:35:02 - trading.api - INFO - API: {"timestamp": "2025-10-16T06:35:02.482935", "endpoint": "/api/system/status", "method": "GET", "status_code": 200, "response_time_ms": 1.4787069999329105, "error": null, "request_body": null}
+INFO:     127.0.0.1:37562 - "GET /api/system/status HTTP/1.1" 200 OK
+2025-10-16 06:35:02 - trading.main - INFO - SYSTEM: {"timestamp": "2025-10-16T06:35:02.903060", "event": "iifl_api_unauthorized", "details": {"url": "https://api.iiflcapital.com/v1/holdings", "endpoint": "/holdings"}}
+2025-10-16 06:35:02 - trading.main - INFO - SYSTEM: {"timestamp": "2025-10-16T06:35:02.903565", "event": "iifl_api_request", "details": {"method": "POST", "url": "https://api.iiflcapital.com/v1/getusersession", "endpoint": "/getusersession", "payload_keys": ["checkSum"]}}
+2025-10-16 06:35:02 - trading.api - INFO - API: {"timestamp": "2025-10-16T06:35:02.961573", "endpoint": "https://api.iiflcapital.com/v1/getusersession", "method": "POST", "status_code": 200, "response_time_ms": 57.909250259399414, "error": null, "request_body": null}
+2025-10-16 06:35:02 - trading.main - INFO - SYSTEM: {"timestamp": "2025-10-16T06:35:02.961818", "event": "iifl_api_response", "details": {"url": "https://api.iiflcapital.com/v1/getusersession", "status_code": 200, "response_time_ms": 57.909250259399414, "response_keys": ["stat", "emsg"]}}
