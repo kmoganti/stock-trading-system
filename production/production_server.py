@@ -43,6 +43,12 @@ class ProductionServer:
         Path("backups").mkdir(exist_ok=True)
         Path("reports").mkdir(exist_ok=True)
         
+    # Default to lightweight startup unless explicitly enabled via env.
+    # This avoids potential hangs from external services (market stream, etc.).
+    os.environ.setdefault("ENABLE_MARKET_STREAM", "false")
+    os.environ.setdefault("ENABLE_STARTUP_CACHE_WARMUP", "false")
+    # Telegram bot is controlled by settings; keep default off unless enabled.
+        
     def setup_signal_handlers(self):
         """Setup signal handlers for graceful shutdown."""
         def signal_handler(signum, frame):
@@ -128,6 +134,11 @@ class ProductionServer:
         try:
             from config.settings import get_settings
             settings = get_settings()
+            # Log effective lightweight options
+            logger.info(
+                f"⚙️ ENABLE_MARKET_STREAM={os.getenv('ENABLE_MARKET_STREAM','').lower()} "
+                f"ENABLE_STARTUP_CACHE_WARMUP={os.getenv('ENABLE_STARTUP_CACHE_WARMUP','').lower()}"
+            )
             
             # Production server configuration
             config = uvicorn.Config(

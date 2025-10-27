@@ -214,25 +214,29 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to start market data stream: {e}", exc_info=True)
         log_timing(f"Market stream failed: {str(e)}")
     
-    # One-time daily refresh of portfolio and margin caches at startup to avoid repeated calls
-    log_timing("Starting portfolio and margin cache warmup")
-    try:
-        log_timing("Importing DataFetcher for cache warmup")
-        from services.data_fetcher import DataFetcher
-        from services.iifl_api import IIFLAPIService
-        log_timing("Creating IIFL service for cache warmup")
-        iifl_for_cache = IIFLAPIService()
-        log_timing("Creating DataFetcher instance")
-        fetcher_for_cache = DataFetcher(iifl_for_cache)
-        log_timing("Getting portfolio data (force refresh)")
-        await fetcher_for_cache.get_portfolio_data(force_refresh=True)
-        log_timing("Getting margin info (force refresh)")
-        await fetcher_for_cache.get_margin_info(force_refresh=True)
-        logger.info("Startup portfolio and margin caches warmed up.")
-        log_timing("Portfolio and margin cache warmup completed")
-    except Exception as e:
-        logger.warning(f"Failed startup cache warmup: {str(e)}")
-        log_timing(f"Cache warmup failed: {str(e)}")
+    # One-time daily refresh of portfolio and margin caches at startup 
+    # (can be disabled with ENABLE_STARTUP_CACHE_WARMUP=false)
+    if os.getenv("ENABLE_STARTUP_CACHE_WARMUP", "false").lower() == "true":
+        log_timing("Starting portfolio and margin cache warmup")
+        try:
+            log_timing("Importing DataFetcher for cache warmup")
+            from services.data_fetcher import DataFetcher
+            from services.iifl_api import IIFLAPIService
+            log_timing("Creating IIFL service for cache warmup")
+            iifl_for_cache = IIFLAPIService()
+            log_timing("Creating DataFetcher instance")
+            fetcher_for_cache = DataFetcher(iifl_for_cache)
+            log_timing("Getting portfolio data (force refresh)")
+            await fetcher_for_cache.get_portfolio_data(force_refresh=True)
+            log_timing("Getting margin info (force refresh)")
+            await fetcher_for_cache.get_margin_info(force_refresh=True)
+            logger.info("Startup portfolio and margin caches warmed up.")
+            log_timing("Portfolio and margin cache warmup completed")
+        except Exception as e:
+            logger.warning(f"Failed startup cache warmup: {str(e)}")
+            log_timing(f"Cache warmup failed: {str(e)}")
+    else:
+        log_timing("Startup cache warmup disabled by configuration")
     
     # Schedule daily housekeeping (log pruning) at 00:30
     log_timing("Starting scheduler initialization")
