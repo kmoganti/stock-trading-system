@@ -49,7 +49,24 @@ reports/
 
 # Ignore the data folder but keep the nifty 100 list
 data/*
-!data/ind_nifty100list.csv# Security-sensitive files
+!data/ind_nifty100list.csv
+
+# Logs and databases
+server.log
+main_server.log
+*.db
+
+# Data caches
+data/hist_cache/
+*.parquet
+*.feather
+
+# Debug and local scripts
+debug/
+improvements_needed.py
+live_long_term_scan.py
+
+# Security-sensitive files
 .env.production
 .env.local
 *.key
