@@ -10,7 +10,7 @@
             <div class="flex items-center">
                 <div>
                     <h1 class="text-2xl font-bold text-gray-900">Trading Signals</h1>
-                    <p class="mt-1 text-sm text-gray-500">Manage and approve trading signals</p>
+                    <p class="mt-1 text-sm text-gray-500">Generate, manage and approve trading signals</p>
                 </div>
                 <div class="ml-auto mr-4 flex items-center space-x-3">
                     <select x-model="statusFilter" @change="filterSignals" class="block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md">
@@ -26,10 +26,45 @@
                         <i class="fas fa-sync-alt mr-2"></i>
                         Refresh
                     </button>
+                    <button @click="showGenerateModal = true" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 whitespace-nowrap">
+                        <i class="fas fa-robot mr-2"></i>
+                        Generate Signals
+                    </button>
                     <button @click="clearAllSignals" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 whitespace-nowrap">
                         <i class="fas fa-trash-alt mr-2"></i>
                         Clear All
                     </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Signal Generation Stats -->
+    <div x-show="generationStats.lastRun" class="bg-gradient-to-r from-blue-50 to-indigo-50 shadow rounded-lg card-shadow">
+        <div class="px-4 py-5 sm:p-6">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-4">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-chart-line text-blue-600 text-2xl"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-lg font-medium text-gray-900">Last Signal Generation</h3>
+                        <p class="text-sm text-gray-600" x-text="'Generated ' + generationStats.signalsGenerated + ' signals on ' + formatDateTime(generationStats.lastRun)"></p>
+                    </div>
+                </div>
+                <div class="flex items-center space-x-6">
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-green-600" x-text="generationStats.signalsGenerated || 0"></div>
+                        <div class="text-xs text-gray-500">Generated</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-blue-600" x-text="generationStats.symbolsAnalyzed || 0"></div>
+                        <div class="text-xs text-gray-500">Symbols</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-purple-600" x-text="generationStats.category || 'N/A'"></div>
+                        <div class="text-xs text-gray-500">Category</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -83,20 +118,30 @@
                                     <div x-show="signal.status !== 'pending'" x-text="formatDateTime(signal.expiry_time)"></div>
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                                    <div x-show="signal.status === 'pending'" class="flex space-x-2">
-                                        <button @click="approveSignal(signal.id)" 
-                                                class="text-green-600 hover:text-green-900">
-                                            <i class="fas fa-check"></i>
-                                        </button>
-                                        <button @click="rejectSignal(signal.id)" 
-                                                class="text-red-600 hover:text-red-900">
-                                            <i class="fas fa-times"></i>
+                                    <div class="flex space-x-2">
+                                        <div x-show="signal.status === 'pending'" class="flex space-x-2">
+                                            <button @click="validateSignalWithLLM(signal.id)" 
+                                                    class="text-purple-600 hover:text-purple-900"
+                                                    title="Validate with AI">
+                                                <i class="fas fa-robot"></i>
+                                            </button>
+                                            <button @click="approveSignal(signal.id)" 
+                                                    class="text-green-600 hover:text-green-900"
+                                                    title="Approve">
+                                                <i class="fas fa-check"></i>
+                                            </button>
+                                            <button @click="rejectSignal(signal.id)" 
+                                                    class="text-red-600 hover:text-red-900"
+                                                    title="Reject">
+                                                <i class="fas fa-times"></i>
+                                            </button>
+                                        </div>
+                                        <button @click="viewSignalDetails(signal)" 
+                                                class="text-indigo-600 hover:text-indigo-900"
+                                                title="View Details">
+                                            <i class="fas fa-eye"></i>
                                         </button>
                                     </div>
-                                    <button @click="viewSignalDetails(signal)" 
-                                            class="text-indigo-600 hover:text-indigo-900">
-                                        <i class="fas fa-eye"></i>
-                                    </button>
                                 </td>
                             </tr>
                         </template>
@@ -106,6 +151,202 @@
                 <div x-show="filteredSignals.length === 0" class="text-center py-8">
                     <i class="fas fa-inbox text-gray-400 text-4xl mb-4"></i>
                     <p class="text-gray-500">No signals found</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Signal Generation Modal -->
+    <div x-show="showGenerateModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50" x-cloak>
+        <div class="relative top-10 mx-auto p-5 border w-11/12 md:w-3/4 lg:w-2/3 shadow-lg rounded-md bg-white">
+            <div class="mt-3">
+                <div class="flex justify-between items-center mb-6">
+                    <h3 class="text-xl font-medium text-gray-900">Generate Trading Signals</h3>
+                    <button @click="showGenerateModal = false" class="text-gray-400 hover:text-gray-600">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                
+                <!-- Generation Type Tabs -->
+                <div class="border-b border-gray-200 mb-6">
+                    <nav class="-mb-px flex space-x-8">
+                        <button @click="generateType = 'live'" 
+                                :class="generateType === 'live' ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'"
+                                class="whitespace-nowrap py-2 px-1 border-b-2 font-medium text-sm">
+                            <i class="fas fa-bolt mr-2"></i>
+                            Live Scan
+                        </button>
+                        <button @click="generateType = 'category'" 
+                                :class="generateType === 'category' ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'"
+                                class="whitespace-nowrap py-2 px-1 border-b-2 font-medium text-sm">
+                            <i class="fas fa-list mr-2"></i>
+                            By Category
+                        </button>
+                        <button @click="generateType = 'custom'" 
+                                :class="generateType === 'custom' ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'"
+                                class="whitespace-nowrap py-2 px-1 border-b-2 font-medium text-sm">
+                            <i class="fas fa-cogs mr-2"></i>
+                            Custom Symbols
+                        </button>
+                    </nav>
+                </div>
+
+                <!-- Live Scan Options -->
+                <div x-show="generateType === 'live'">
+                    <div class="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
+                        <div class="flex">
+                            <i class="fas fa-info-circle text-green-600 mt-0.5 mr-3"></i>
+                            <div>
+                                <h4 class="text-sm font-medium text-green-800">Live Market Scan</h4>
+                                <p class="text-sm text-green-700 mt-1">Analyzes current market conditions using real-time data to identify trading opportunities across multiple strategies.</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-4 mb-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Scan Type</label>
+                            <select x-model="liveOptions.scanType" class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                                <option value="long_term">Long Term (60-90 days)</option>
+                                <option value="short_term">Short Term (7-30 days)</option>
+                                <option value="intraday">Intraday (Same day)</option>
+                                <option value="comprehensive">Comprehensive (All)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Market Cap Filter</label>
+                            <select x-model="liveOptions.marketCap" class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                                <option value="all">All Stocks</option>
+                                <option value="large">Large Cap</option>
+                                <option value="mid">Mid Cap</option>
+                                <option value="small">Small Cap</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Category Options -->
+                <div x-show="generateType === 'category'">
+                    <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+                        <div class="flex">
+                            <i class="fas fa-info-circle text-blue-600 mt-0.5 mr-3"></i>
+                            <div>
+                                <h4 class="text-sm font-medium text-blue-800">Watchlist Category Scan</h4>
+                                <p class="text-sm text-blue-700 mt-1">Generate signals for stocks in specific watchlist categories using historical and intraday strategies.</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-4 mb-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Category</label>
+                            <select x-model="categoryOptions.category" class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                                <option value="long_term">Long Term</option>
+                                <option value="short_term">Short Term</option>
+                                <option value="day_trading">Day Trading</option>
+                                <option value="swing_trading">Swing Trading</option>
+                                <option value="momentum">Momentum</option>
+                                <option value="value">Value</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Strategy Type</label>
+                            <select x-model="categoryOptions.strategyType" class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                                <option value="intraday">Intraday Signals</option>
+                                <option value="historic">Historic Analysis</option>
+                                <option value="both">Both</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Custom Symbols Options -->
+                <div x-show="generateType === 'custom'">
+                    <div class="bg-purple-50 border border-purple-200 rounded-lg p-4 mb-4">
+                        <div class="flex">
+                            <i class="fas fa-info-circle text-purple-600 mt-0.5 mr-3"></i>
+                            <div>
+                                <h4 class="text-sm font-medium text-purple-800">Custom Symbol Analysis</h4>
+                                <p class="text-sm text-purple-700 mt-1">Analyze specific symbols with custom parameters and generate targeted signals.</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Symbols (comma-separated)</label>
+                        <textarea x-model="customOptions.symbols" 
+                                  placeholder="RELIANCE, TCS, INFY, HDFCBANK, ICICIBANK"
+                                  class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" 
+                                  rows="3"></textarea>
+                    </div>
+                    
+                    <div class="grid grid-cols-2 gap-4 mb-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Analysis Period</label>
+                            <select x-model="customOptions.period" class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                                <option value="1D">Intraday (1 Day)</option>
+                                <option value="5D">Short (5 Days)</option>
+                                <option value="30D">Medium (30 Days)</option>
+                                <option value="90D">Long (90 Days)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Strategy Filter</label>
+                            <select x-model="customOptions.strategy" class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                                <option value="">All Strategies</option>
+                                <option value="momentum">Momentum</option>
+                                <option value="mean_reversion">Mean Reversion</option>
+                                <option value="breakout">Breakout</option>
+                                <option value="trend_following">Trend Following</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Common Options -->
+                <div class="border-t pt-4 mb-6">
+                    <h4 class="text-sm font-medium text-gray-900 mb-3">Signal Options</h4>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="flex items-center">
+                            <input x-model="generateOptions.persist" type="checkbox" id="persist" class="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded">
+                            <label for="persist" class="ml-2 block text-sm text-gray-900">Save to Database</label>
+                        </div>
+                        <div class="flex items-center">
+                            <input x-model="generateOptions.queueForApproval" type="checkbox" id="queue" class="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded">
+                            <label for="queue" class="ml-2 block text-sm text-gray-900">Queue for Approval</label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Generation Progress -->
+                <div x-show="generationInProgress" class="mb-4">
+                    <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                        <div class="flex items-center">
+                            <div class="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600 mr-3"></div>
+                            <div>
+                                <p class="text-sm font-medium text-blue-800" x-text="generationStatus"></p>
+                                <div x-show="generationProgress > 0" class="w-full bg-blue-200 rounded-full h-2 mt-2">
+                                    <div class="bg-blue-600 h-2 rounded-full transition-all duration-300" 
+                                         :style="`width: ${generationProgress}%`"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Action Buttons -->
+                <div class="flex justify-end space-x-3">
+                    <button @click="showGenerateModal = false" 
+                            :disabled="generationInProgress"
+                            class="px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50">
+                        Cancel
+                    </button>
+                    <button @click="generateSignals" 
+                            :disabled="generationInProgress"
+                            class="px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50">
+                        <i class="fas fa-play mr-2"></i>
+                        Generate Signals
+                    </button>
                 </div>
             </div>
         </div>
@@ -166,7 +407,7 @@
                         </div>
                     </div>
                     
-                    <div class="grid grid-cols-2 gap-4">
+                    <div class="grid grid-cols-2 gap-4 mb-4">
                         <div>
                             <label class="block text-sm font-medium text-gray-700">Created At</label>
                             <p class="mt-1 text-sm text-gray-900" x-text="formatDateTime(selectedSignal?.created_at)"></p>
@@ -176,13 +417,27 @@
                             <p class="mt-1 text-sm text-gray-900" x-text="formatDateTime(selectedSignal?.expiry_time)"></p>
                         </div>
                     </div>
+                    
+                    <!-- Price Chart -->
+                    <div class="border-t pt-4">
+                        <h4 class="text-sm font-medium text-gray-900 mb-3">Price Chart</h4>
+                        <div class="relative h-64 bg-gray-50 rounded-lg flex items-center justify-center">
+                            <canvas id="signalChart" class="max-w-full max-h-full"></canvas>
+                            <div x-show="!chartLoaded" class="absolute inset-0 flex items-center justify-center">
+                                <div class="text-center">
+                                    <i class="fas fa-chart-line text-gray-400 text-3xl mb-2"></i>
+                                    <p class="text-sm text-gray-500">Loading price data...</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- API Key Modal -->
-    <div x-show="!apiKey" class="fixed inset-0 bg-gray-800 bg-opacity-75 flex items-center justify-center z-50" x-cloak>
+    <!-- API Key Modal - Hidden -->
+    <div x-show="false" class="fixed inset-0 bg-gray-800 bg-opacity-75 flex items-center justify-center z-50" x-cloak>
         <div class="bg-white rounded-lg p-8 shadow-xl max-w-sm w-full mx-4">
             <h3 class="text-xl font-bold mb-4 text-gray-900">API Key Required</h3>
             <p class="text-gray-600 mb-6">To manage signals, please enter your API key. You can find this in your <code>.env</code> file on the server.</p>
@@ -210,18 +465,54 @@ document.addEventListener('alpine:init', () => {
         selectedSignal: null,
         newApiKey: '',
         
+        // Chart state
+        signalChart: null,
+        chartLoaded: false,
+        
+        // Signal Generation State
+        showGenerateModal: false,
+        generateType: 'live',
+        generationInProgress: false,
+        generationStatus: '',
+        generationProgress: 0,
+        generationStats: {
+            lastRun: null,
+            signalsGenerated: 0,
+            symbolsAnalyzed: 0,
+            category: null
+        },
+        
+        // Generation Options
+        liveOptions: {
+            scanType: 'long_term',
+            marketCap: 'large'
+        },
+        categoryOptions: {
+            category: 'long_term',
+            strategyType: 'both'
+        },
+        customOptions: {
+            symbols: '',
+            period: '30D',
+            strategy: ''
+        },
+        generateOptions: {
+            persist: true,
+            queueForApproval: true
+        },
+        
         // IMPORTANT: For this to work, you must store your API key in the browser's localStorage.
         // Open your browser's developer console and run:
         // localStorage.setItem('tradingApiKey', 'YOUR_SECRET_KEY_HERE');
         apiKey: localStorage.getItem('tradingApiKey'),
         async init() {
-            // Only load signals if the API key is present.
-            // Otherwise, the modal will show, and signals will be loaded after the key is saved.
-            if (this.apiKey) {
-                await this.loadSignals();
-                // Refresh every 15 seconds
-                setInterval(() => this.loadSignals(), 15000);
-            }
+            // Load generation stats from localStorage
+            this.loadGenerationStats();
+            
+            // Load signals without API key requirement
+            await this.loadSignals();
+            // Refresh every 15 seconds
+            setInterval(() => this.loadSignals(), 15000);
         },
         
         async loadSignals() {
@@ -252,7 +543,7 @@ document.addEventListener('alpine:init', () => {
                 const response = await fetch(`/api/signals/${signalId}/approve`, {
                     method: 'POST',
                     headers: {
-                        'X-API-Key': this.apiKey
+                        'Content-Type': 'application/json'
                     }
                 });
                 
@@ -276,7 +567,7 @@ document.addEventListener('alpine:init', () => {
                 const response = await fetch(`/api/signals/${signalId}/reject`, {
                     method: 'POST',
                     headers: {
-                        'X-API-Key': this.apiKey
+                        'Content-Type': 'application/json'
                     }
                 });
                 
@@ -308,6 +599,132 @@ document.addEventListener('alpine:init', () => {
             this.init();
         },
 
+        loadGenerationStats() {
+            const stats = localStorage.getItem('signalGenerationStats');
+            if (stats) {
+                try {
+                    this.generationStats = JSON.parse(stats);
+                } catch (e) {
+                    console.error('Failed to parse generation stats:', e);
+                }
+            }
+        },
+
+        saveGenerationStats() {
+            localStorage.setItem('signalGenerationStats', JSON.stringify(this.generationStats));
+        },
+
+        async generateSignals() {
+            this.generationInProgress = true;
+            this.generationProgress = 0;
+            this.generationStatus = 'Initializing signal generation...';
+
+            try {
+                let endpoint = '';
+                let payload = {};
+
+                if (this.generateType === 'live') {
+                    // Use the live long-term scan we created
+                    this.generationStatus = 'Running live market scan...';
+                    this.generationProgress = 25;
+                    
+                    // We'll call a custom endpoint for our live scan
+                    endpoint = '/api/signals/generate/live';
+                    payload = {
+                        scan_type: this.liveOptions.scanType,
+                        market_cap: this.liveOptions.marketCap,
+                        persist: this.generateOptions.persist,
+                        queue_for_approval: this.generateOptions.queueForApproval
+                    };
+                } else if (this.generateType === 'category') {
+                    this.generationStatus = `Analyzing ${this.categoryOptions.category} watchlist...`;
+                    this.generationProgress = 25;
+                    
+                    if (this.categoryOptions.strategyType === 'intraday' || this.categoryOptions.strategyType === 'both') {
+                        endpoint = '/api/signals/generate/intraday';
+                        payload = {
+                            category: this.categoryOptions.category,
+                            persist: this.generateOptions.persist,
+                            queue_for_approval: this.generateOptions.queueForApproval
+                        };
+                    } else {
+                        endpoint = '/api/signals/generate/historic';
+                        payload = {
+                            category: this.categoryOptions.category,
+                            persist: this.generateOptions.persist,
+                            queue_for_approval: this.generateOptions.queueForApproval
+                        };
+                    }
+                } else if (this.generateType === 'custom') {
+                    this.generationStatus = 'Analyzing custom symbols...';
+                    this.generationProgress = 25;
+                    
+                    const symbols = this.customOptions.symbols.split(',').map(s => s.trim()).filter(s => s);
+                    if (symbols.length === 0) {
+                        throw new Error('Please enter at least one symbol');
+                    }
+                    
+                    endpoint = '/api/signals/generate/historic';
+                    payload = {
+                        symbols: symbols,
+                        strategy_name: this.customOptions.strategy || null,
+                        persist: this.generateOptions.persist,
+                        queue_for_approval: this.generateOptions.queueForApproval
+                    };
+                }
+
+                this.generationProgress = 50;
+                this.generationStatus = 'Generating signals...';
+
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                this.generationProgress = 75;
+                this.generationStatus = 'Processing results...';
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    this.generationProgress = 100;
+                    this.generationStatus = 'Generation completed!';
+
+                    // Update stats
+                    this.generationStats = {
+                        lastRun: new Date().toISOString(),
+                        signalsGenerated: result.count || 0,
+                        symbolsAnalyzed: result.symbols_analyzed || (result.signals ? result.signals.length : 0),
+                        category: this.generateType === 'category' ? this.categoryOptions.category : this.generateType
+                    };
+                    this.saveGenerationStats();
+
+                    showToast(`Generated ${result.count} signals successfully!`, 'success');
+                    
+                    // Refresh signals list
+                    await this.loadSignals();
+                    
+                    // Close modal after a brief delay
+                    setTimeout(() => {
+                        this.showGenerateModal = false;
+                        this.generationInProgress = false;
+                    }, 2000);
+                } else {
+                    throw new Error(result.detail || result.message || 'Failed to generate signals');
+                }
+
+            } catch (error) {
+                console.error('Signal generation error:', error);
+                showToast(`Error generating signals: ${error.message}`, 'error');
+                this.generationInProgress = false;
+                this.generationProgress = 0;
+                this.generationStatus = '';
+            }
+        },
+
         async clearAllSignals() {
             if (!confirm('Are you sure you want to delete ALL signals? This action cannot be undone.')) {
                 return;
@@ -317,7 +734,7 @@ document.addEventListener('alpine:init', () => {
                 const response = await fetch('/api/signals/all', {
                     method: 'DELETE',
                     headers: {
-                        'X-API-Key': this.apiKey
+                        'Content-Type': 'application/json'
                     }
                 });
                 const result = await response.json();
@@ -332,9 +749,298 @@ document.addEventListener('alpine:init', () => {
             }
         },
 
-        viewSignalDetails(signal) {
+        async validateSignalWithLLM(signalId) {
+            try {
+                showToast('Validating signal with AI...', 'info');
+                
+                const response = await fetch(`/api/signals/${signalId}/validate`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    const validation = result.validation_result.toUpperCase();
+                    const confidence = (result.confidence * 100).toFixed(1);
+                    
+                    let message = `AI Validation: ${validation} (${confidence}% confidence)`;
+                    let type = 'info';
+                    
+                    if (validation === 'APPROVE') {
+                        type = 'success';
+                        message += ' ✅ Recommended for execution';
+                    } else if (validation === 'REJECT') {
+                        type = 'error';
+                        message += ' ❌ Not recommended';
+                    } else if (validation === 'CAUTION') {
+                        type = 'warning';
+                        message += ' ⚠️ Proceed with caution';
+                    }
+                    
+                    showToast(message, type);
+                    
+                    // Show detailed results in modal
+                    this.showValidationResults(result);
+                    
+                    // Refresh signals to show updated metadata
+                    await this.loadSignals();
+                    
+                } else {
+                    showToast(result.detail || 'AI validation failed', 'error');
+                }
+                
+            } catch (error) {
+                console.error('Error validating signal with AI:', error);
+                showToast('Error during AI validation', 'error');
+            }
+        },
+
+        showValidationResults(validation) {
+            // Create and show validation results modal
+            const modal = document.createElement('div');
+            modal.className = 'fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50';
+            modal.innerHTML = `
+                <div class="relative top-20 mx-auto p-5 border w-11/12 md:w-3/4 lg:w-1/2 shadow-lg rounded-md bg-white">
+                    <div class="mt-3">
+                        <div class="flex justify-between items-center mb-4">
+                            <h3 class="text-lg font-medium text-gray-900">AI Validation Results</h3>
+                            <button onclick="this.closest('.fixed').remove()" class="text-gray-400 hover:text-gray-600">
+                                <i class="fas fa-times"></i>
+                            </button>
+                        </div>
+                        
+                        <div class="space-y-4">
+                            <div class="flex items-center space-x-3">
+                                <span class="font-medium">Result:</span>
+                                <span class="px-3 py-1 rounded-full text-sm font-medium ${this.getValidationResultClass(validation.validation_result)}">
+                                    ${validation.validation_result.toUpperCase()}
+                                </span>
+                                <span class="text-sm text-gray-500">${(validation.confidence * 100).toFixed(1)}% confidence</span>
+                            </div>
+                            
+                            <div>
+                                <span class="font-medium">Reasoning:</span>
+                                <p class="text-gray-700 mt-1">${validation.reasoning}</p>
+                            </div>
+                            
+                            ${validation.risk_factors.length > 0 ? `
+                            <div>
+                                <span class="font-medium">Risk Factors:</span>
+                                <ul class="list-disc list-inside text-gray-700 mt-1">
+                                    ${validation.risk_factors.map(factor => `<li>${factor}</li>`).join('')}
+                                </ul>
+                            </div>
+                            ` : ''}
+                            
+                            ${validation.suggestions.length > 0 ? `
+                            <div>
+                                <span class="font-medium">Suggestions:</span>
+                                <ul class="list-disc list-inside text-gray-700 mt-1">
+                                    ${validation.suggestions.map(suggestion => `<li>${suggestion}</li>`).join('')}
+                                </ul>
+                            </div>
+                            ` : ''}
+                            
+                            <div>
+                                <span class="font-medium">Execution Priority:</span>
+                                <span class="ml-2 px-2 py-1 rounded text-sm ${this.getPriorityClass(validation.execution_priority)}">
+                                    ${validation.execution_priority.toUpperCase()}
+                                </span>
+                            </div>
+                            
+                            <div>
+                                <span class="font-medium">Should Execute:</span>
+                                <span class="ml-2 ${validation.should_execute ? 'text-green-600' : 'text-red-600'}">
+                                    ${validation.should_execute ? '✅ Yes' : '❌ No'}
+                                </span>
+                            </div>
+                            
+                            ${validation.recommended_position_size ? `
+                            <div>
+                                <span class="font-medium">Recommended Position Size:</span>
+                                <span class="ml-2">${(validation.recommended_position_size * 100).toFixed(1)}% of original</span>
+                            </div>
+                            ` : ''}
+                        </div>
+                        
+                        <div class="mt-6 flex justify-end">
+                            <button onclick="this.closest('.fixed').remove()" 
+                                    class="px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400">
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            document.body.appendChild(modal);
+        },
+
+        getValidationResultClass(result) {
+            const classes = {
+                'approve': 'bg-green-100 text-green-800',
+                'reject': 'bg-red-100 text-red-800',
+                'caution': 'bg-yellow-100 text-yellow-800',
+                'insufficient_data': 'bg-gray-100 text-gray-800'
+            };
+            return classes[result.toLowerCase()] || 'bg-gray-100 text-gray-800';
+        },
+
+        getPriorityClass(priority) {
+            const classes = {
+                'high': 'bg-red-100 text-red-800',
+                'medium': 'bg-yellow-100 text-yellow-800',
+                'low': 'bg-green-100 text-green-800'
+            };
+            return classes[priority.toLowerCase()] || 'bg-gray-100 text-gray-800';
+        },
+
+        async viewSignalDetails(signal) {
             this.selectedSignal = signal;
             this.showModal = true;
+            this.chartLoaded = false;
+            
+            // Wait for modal to be visible, then load chart
+            await this.$nextTick();
+            setTimeout(() => {
+                this.loadSignalChart(signal);
+            }, 100);
+        },
+
+        async loadSignalChart(signal) {
+            try {
+                // Destroy existing chart
+                if (this.signalChart) {
+                    this.signalChart.destroy();
+                    this.signalChart = null;
+                }
+
+                const canvas = document.getElementById('signalChart');
+                if (!canvas) return;
+
+                const ctx = canvas.getContext('2d');
+                
+                // Generate mock price data for demonstration
+                // In a real implementation, you would fetch actual historical data
+                const mockData = this.generateMockPriceData(signal);
+                
+                this.signalChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: mockData.labels,
+                        datasets: [
+                            {
+                                label: 'Price',
+                                data: mockData.prices,
+                                borderColor: '#3b82f6',
+                                backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                                borderWidth: 2,
+                                fill: true,
+                                tension: 0.1
+                            },
+                            {
+                                label: 'Entry Price',
+                                data: Array(mockData.labels.length).fill(signal.price),
+                                borderColor: '#10b981',
+                                backgroundColor: 'transparent',
+                                borderWidth: 2,
+                                borderDash: [5, 5],
+                                pointRadius: 0
+                            },
+                            {
+                                label: 'Stop Loss',
+                                data: Array(mockData.labels.length).fill(signal.stop_loss),
+                                borderColor: '#ef4444',
+                                backgroundColor: 'transparent',
+                                borderWidth: 1,
+                                borderDash: [3, 3],
+                                pointRadius: 0
+                            },
+                            {
+                                label: 'Take Profit',
+                                data: Array(mockData.labels.length).fill(signal.take_profit),
+                                borderColor: '#f59e0b',
+                                backgroundColor: 'transparent',
+                                borderWidth: 1,
+                                borderDash: [3, 3],
+                                pointRadius: 0
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        scales: {
+                            x: {
+                                display: true,
+                                title: {
+                                    display: true,
+                                    text: 'Time'
+                                }
+                            },
+                            y: {
+                                display: true,
+                                title: {
+                                    display: true,
+                                    text: 'Price (₹)'
+                                }
+                            }
+                        },
+                        plugins: {
+                            legend: {
+                                display: true,
+                                position: 'top'
+                            },
+                            tooltip: {
+                                mode: 'index',
+                                intersect: false,
+                                callbacks: {
+                                    label: function(context) {
+                                        return context.dataset.label + ': ₹' + context.parsed.y.toFixed(2);
+                                    }
+                                }
+                            }
+                        },
+                        interaction: {
+                            mode: 'nearest',
+                            axis: 'x',
+                            intersect: false
+                        }
+                    }
+                });
+                
+                this.chartLoaded = true;
+                
+            } catch (error) {
+                console.error('Error loading signal chart:', error);
+                this.chartLoaded = false;
+            }
+        },
+
+        generateMockPriceData(signal) {
+            // Generate realistic price data around the signal price
+            const basePrice = signal.price || 100;
+            const labels = [];
+            const prices = [];
+            const days = 30;
+            
+            const today = new Date();
+            for (let i = days; i >= 0; i--) {
+                const date = new Date(today);
+                date.setDate(date.getDate() - i);
+                labels.push(date.toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }));
+                
+                // Generate price with some volatility
+                const volatility = 0.02; // 2% daily volatility
+                const randomChange = (Math.random() - 0.5) * 2 * volatility;
+                const price = i === 0 ? basePrice : basePrice * (1 + randomChange * (i / days));
+                prices.push(Math.max(price, basePrice * 0.8)); // Floor at 80% of base
+            }
+            
+            return { labels, prices };
         },
         
         async refreshSignals() {

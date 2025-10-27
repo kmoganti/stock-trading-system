@@ -59,6 +59,25 @@ try:
         max_sector_exposure: float = Field(default=0.3, alias="MAX_SECTOR_EXPOSURE")  # 30% max in any single sector
         enable_sector_diversification: bool = Field(default=True, alias="ENABLE_SECTOR_DIVERSIFICATION")  # Force diversification
         
+        # Real-time Risk Monitoring Settings
+        MAX_DAILY_LOSS: float = Field(default=0.06, alias="MAX_DAILY_LOSS")  # 6% max daily loss
+        MAX_POSITION_SIZE: int = Field(default=100000, alias="MAX_POSITION_SIZE")  # Max position size
+        MAX_POSITIONS: int = Field(default=12, alias="MAX_POSITIONS")  # Maximum number of positions
+        RISK_PER_TRADE: float = Field(default=0.025, alias="RISK_PER_TRADE")  # Risk per trade
+        RISK_CHECK_INTERVAL: int = Field(default=30, alias="RISK_CHECK_INTERVAL")  # Risk check every 30 seconds
+        ENABLE_RISK_MONITORING: bool = Field(default=True, alias="ENABLE_RISK_MONITORING")  # Enable real-time risk monitoring
+        EMERGENCY_HALT_THRESHOLD: float = Field(default=0.05, alias="EMERGENCY_HALT_THRESHOLD")  # 5% emergency halt threshold
+        
+        # LLM Signal Validation Settings
+        LLM_VALIDATION_ENABLED: bool = Field(default=False, alias="LLM_VALIDATION_ENABLED")  # Enable LLM signal validation
+        LLM_PRIMARY_PROVIDER: str = Field(default="openai", alias="LLM_PRIMARY_PROVIDER")  # Primary LLM provider (openai, anthropic, perplexity)
+        LLM_VALIDATION_TIMEOUT: int = Field(default=10, alias="LLM_VALIDATION_TIMEOUT")  # LLM API timeout in seconds
+        LLM_MIN_CONFIDENCE: float = Field(default=0.7, alias="LLM_MIN_CONFIDENCE")  # Minimum confidence for approval
+        OPENAI_API_KEY: str = Field(default="", alias="OPENAI_API_KEY")  # OpenAI API key
+        ANTHROPIC_API_KEY: str = Field(default="", alias="ANTHROPIC_API_KEY")  # Anthropic API key
+        PERPLEXITY_API_KEY: str = Field(default="", alias="PERPLEXITY_API_KEY")  # Perplexity API key
+        LLM_VALIDATION_MODE: str = Field(default="all", alias="LLM_VALIDATION_MODE")  # Validation mode: all, high_value, selective
+        
         # Signal Quality Improvements (New)
         require_trend_confirmation: bool = Field(default=True, alias="REQUIRE_TREND_CONFIRMATION")  # Must be above EMA50 for buy signals
         price_quality_filter: bool = Field(default=True, alias="PRICE_QUALITY_FILTER")  # Filter out low-quality price action
@@ -320,6 +339,25 @@ except Exception:
             # Risk Management - Sector Concentration (New)
             self.max_sector_exposure: float = float(os.getenv("MAX_SECTOR_EXPOSURE", "0.3") or 0.3)
             self.enable_sector_diversification: bool = os.getenv("ENABLE_SECTOR_DIVERSIFICATION", "true").lower() != "false"
+            
+            # Real-time Risk Monitoring Settings
+            self.MAX_DAILY_LOSS: float = float(os.getenv("MAX_DAILY_LOSS", "0.06") or 0.06)  # 6% max daily loss
+            self.MAX_POSITION_SIZE: int = int(os.getenv("MAX_POSITION_SIZE", "100000") or 100000)  # Max position size
+            self.MAX_POSITIONS: int = int(os.getenv("MAX_POSITIONS", "12") or 12)  # Maximum number of positions
+            self.RISK_PER_TRADE: float = float(os.getenv("RISK_PER_TRADE", "0.025") or 0.025)  # Risk per trade
+            self.RISK_CHECK_INTERVAL: int = int(os.getenv("RISK_CHECK_INTERVAL", "30") or 30)  # Risk check every 30 seconds
+            self.ENABLE_RISK_MONITORING: bool = os.getenv("ENABLE_RISK_MONITORING", "true").lower() != "false"  # Enable real-time risk monitoring
+            self.EMERGENCY_HALT_THRESHOLD: float = float(os.getenv("EMERGENCY_HALT_THRESHOLD", "0.05") or 0.05)  # 5% emergency halt threshold
+            
+            # LLM Signal Validation Settings
+            self.LLM_VALIDATION_ENABLED: bool = os.getenv("LLM_VALIDATION_ENABLED", "false").lower() == "true"  # Enable LLM signal validation
+            self.LLM_PRIMARY_PROVIDER: str = os.getenv("LLM_PRIMARY_PROVIDER", "openai")  # Primary LLM provider
+            self.LLM_VALIDATION_TIMEOUT: int = int(os.getenv("LLM_VALIDATION_TIMEOUT", "10") or 10)  # LLM API timeout
+            self.LLM_MIN_CONFIDENCE: float = float(os.getenv("LLM_MIN_CONFIDENCE", "0.7") or 0.7)  # Minimum confidence for approval
+            self.OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")  # OpenAI API key
+            self.ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")  # Anthropic API key
+            self.PERPLEXITY_API_KEY: str = os.getenv("PERPLEXITY_API_KEY", "")  # Perplexity API key
+            self.LLM_VALIDATION_MODE: str = os.getenv("LLM_VALIDATION_MODE", "all")  # Validation mode
             
             # Signal Quality Improvements (New)
             self.require_trend_confirmation: bool = os.getenv("REQUIRE_TREND_CONFIRMATION", "true").lower() != "false"

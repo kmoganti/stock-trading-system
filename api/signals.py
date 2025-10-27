@@ -11,6 +11,7 @@ from services.risk import RiskService
 from services.data_fetcher import DataFetcher
 from services.strategy import StrategyService
 from services.watchlist import WatchlistService
+from services.signal_validator import get_signal_validator, ValidationResult
 from .auth import get_api_key
 
 router = APIRouter(prefix="/api/signals", tags=["signals"])
@@ -160,9 +161,104 @@ async def generate_intraday_signals(
         logger.error(f"Error generating intraday signals: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/generate/live")
+async def generate_live_signals(
+    scan_type: str = "long_term",
+    market_cap: str = "large", 
+    persist: bool = True,
+    queue_for_approval: bool = True,
+    db: AsyncSession = Depends(get_db),
+    order_manager: OrderManager = Depends(get_order_manager)
+) -> Dict[str, Any]:
+    """Generate live market signals using real-time analysis"""
+    try:
+        # Import our live scanner
+        import sys
+        import os
+        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        
+        from live_long_term_scan import LiveLongTermScanner
+        import asyncio
+        
+        scanner = LiveLongTermScanner()
+        
+        # Define symbol sets based on market cap
+        if market_cap == "large":
+            symbols = [
+                "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "KOTAKBANK", "AXISBANK",
+                "BAJFINANCE", "BHARTIARTL", "ITC", "HINDUNILVR", "ASIANPAINT", "MARUTI",
+                "SUNPHARMA", "LTIM", "TITAN", "NESTLEIND", "ULTRACEMCO", "TECHM",
+                "ADANIPORTS", "POWERGRID", "NTPC", "COALINDIA", "ONGC"
+            ]
+        elif market_cap == "mid":
+            symbols = [
+                "ADANIENSOL", "ADANIGREEN", "CHOLAFIN", "BEL", "HAL", "SIEMENS", 
+                "ABB", "BOSCHLTD", "HAVELLS", "PIDILITIND", "GODREJCP", "DABUR"
+            ]
+        else:  # all or small
+            symbols = [
+                "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "KOTAKBANK", "AXISBANK",
+                "BAJFINANCE", "BHARTIARTL", "ITC", "HINDUNILVR", "ASIANPAINT", "MARUTI",
+                "SUNPHARMA", "LTIM", "TITAN", "NESTLEIND", "ULTRACEMCO", "TECHM",
+                "ADANIPORTS", "POWERGRID", "NTPC", "COALINDIA", "ONGC", "TATASTEEL",
+                "JSWSTEEL", "HINDALCO", "VEDL", "GRASIM", "CIPLA", "DRREDDY",
+                "BAJAJ-AUTO", "M&M", "EICHERMOT", "BOSCHLTD", "HAVELLS", "SIEMENS", "ABB"
+            ]
+        
+        # Run the live scan
+        results = await scanner.scan_watchlist(symbols)
+        
+        generated_signals = []
+        persisted_ids = []
+        
+        for opportunity in results["opportunities"]:
+            for signal in opportunity["signals"]:
+                # Convert to our signal format
+                signal_data = {
+                    "symbol": opportunity["symbol"],
+                    "signal_type": signal["type"].lower(),
+                    "entry_price": signal["entry"],
+                    "stop_loss": signal["stop_loss"],
+                    "take_profit": signal["target"],
+                    "reason": f"Live scan: {signal['reason']}",
+                    "strategy": signal["strategy"],
+                    "confidence": opportunity["confidence"],
+                }
+                generated_signals.append(signal_data)
+                
+                if persist:
+                    from models.signals import SignalType as ModelSignalType
+                    created = await order_manager.create_signal({
+                        "symbol": opportunity["symbol"],
+                        "signal_type": ModelSignalType(signal["type"].lower()),
+                        "entry_price": signal["entry"],
+                        "stop_loss": signal["stop_loss"],
+                        "take_profit": signal["target"],
+                        "reason": f"Live scan: {signal['reason']}",
+                        "strategy": signal["strategy"],
+                        "confidence": opportunity["confidence"],
+                    })
+                    if created:
+                        persisted_ids.append(created.id)
+                        if queue_for_approval:
+                            await order_manager.process_signal(created)
+        
+        return {
+            "count": len(generated_signals),
+            "signals": generated_signals,
+            "persisted_ids": persisted_ids,
+            "symbols_analyzed": len(symbols),
+            "opportunities_found": len(results["opportunities"])
+        }
+        
+    except Exception as e:
+        logger.error(f"Error generating live signals: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/generate/historic")
 async def generate_historic_signals(
     symbol: Optional[str] = None,
+    symbols: Optional[List[str]] = None,  # Support multiple symbols
     category: Optional[str] = None,
     strategy_name: Optional[str] = None,
     persist: bool = True,
@@ -184,16 +280,18 @@ async def generate_historic_signals(
         data_fetcher = DataFetcher(iifl, db_session=db)
         strategy = StrategyService(data_fetcher, db)
 
-        symbols: List[str] = []
+        symbol_list: List[str] = []
         if symbol:
-            symbols = [symbol.upper()]
+            symbol_list = [symbol.upper()]
+        elif symbols:
+            symbol_list = [s.upper() for s in symbols]
         else:
-            symbols = await strategy.get_watchlist(category=category or "day_trading")
+            symbol_list = await strategy.get_watchlist(category=category or "day_trading")
 
         generated: List[Dict[str, Any]] = []
         persisted: List[int] = []
 
-        for sym in symbols:
+        for sym in symbol_list:
             sigs = await strategy.generate_signals(sym)
             # Fallback to mock if nothing generated
             if not sigs:
@@ -380,3 +478,188 @@ async def get_signal_order_status(
     except Exception as e:
         logger.error(f"Error getting order status for signal {signal_id}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/{signal_id}/validate")
+async def validate_signal_with_llm(
+    signal_id: int,
+    db: AsyncSession = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Validate a specific signal using LLM analysis
+    """
+    try:
+        from datetime import datetime
+        
+        # Get the signal
+        signal = await db.get(Signal, signal_id)
+        if not signal:
+            raise HTTPException(status_code=404, detail="Signal not found")
+        
+        # Get LLM validator
+        validator = get_signal_validator()
+        
+        # Convert signal to dict for validation
+        signal_data = {
+            "symbol": signal.symbol,
+            "signal_type": signal.signal_type.value,
+            "price": float(signal.entry_price),
+            "stop_loss": float(signal.stop_loss) if signal.stop_loss else None,
+            "take_profit": float(signal.take_profit) if signal.take_profit else None,
+            "quantity": signal.quantity,
+            "confidence": float(signal.confidence) if signal.confidence else 0.7,
+            "strategy_name": signal.strategy,
+            "reason": signal.reason,
+            "generated_at": signal.generated_at.isoformat() if signal.generated_at else None
+        }
+        
+        # Get market context (you can enhance this)
+        market_context = {
+            "market_trend": "neutral",  # You can fetch from market data service
+            "volatility": "medium",
+            "sector_performance": "mixed"
+        }
+        
+        # Validate with LLM
+        validation = await validator.validate_signal(signal_data, market_context)
+        
+        # Update signal with validation metadata
+        signal.metadata = signal.metadata or {}
+        validation_metadata = validator.get_execution_metadata(validation)
+        signal.metadata.update(validation_metadata)
+        signal.metadata["llm_validated_at"] = str(datetime.utcnow())
+        
+        await db.commit()
+        
+        return {
+            "signal_id": signal_id,
+            "validation_result": validation.result.value,
+            "confidence": validation.confidence,
+            "reasoning": validation.reasoning,
+            "risk_factors": validation.risk_factors,
+            "suggestions": validation.suggestions,
+            "market_context": validation.market_context,
+            "execution_priority": validation.execution_priority,
+            "should_execute": validator.should_execute_signal(validation),
+            "recommended_position_size": validation.recommended_position_size
+        }
+        
+    except Exception as e:
+        logger.error(f"Error validating signal {signal_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Validation failed: {str(e)}")
+
+@router.post("/validate/batch")
+async def validate_signals_batch(
+    signal_ids: List[int],
+    db: AsyncSession = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Validate multiple signals using LLM analysis
+    """
+    try:
+        from datetime import datetime
+        
+        if len(signal_ids) > 10:
+            raise HTTPException(status_code=400, detail="Maximum 10 signals can be validated at once")
+        
+        # Get all signals
+        signals = []
+        for signal_id in signal_ids:
+            signal = await db.get(Signal, signal_id)
+            if signal:
+                signals.append(signal)
+        
+        if not signals:
+            raise HTTPException(status_code=404, detail="No valid signals found")
+        
+        # Get LLM validator
+        validator = get_signal_validator()
+        
+        # Convert signals to dict format
+        signals_data = []
+        for signal in signals:
+            signal_data = {
+                "id": signal.id,
+                "symbol": signal.symbol,
+                "signal_type": signal.signal_type.value,
+                "price": float(signal.entry_price),
+                "stop_loss": float(signal.stop_loss) if signal.stop_loss else None,
+                "take_profit": float(signal.take_profit) if signal.take_profit else None,
+                "quantity": signal.quantity,
+                "confidence": float(signal.confidence) if signal.confidence else 0.7,
+                "strategy_name": signal.strategy,
+                "reason": signal.reason,
+                "generated_at": signal.generated_at.isoformat() if signal.generated_at else None
+            }
+            signals_data.append(signal_data)
+        
+        # Get market context
+        market_context = {
+            "market_trend": "neutral",
+            "volatility": "medium",
+            "sector_performance": "mixed"
+        }
+        
+        # Validate all signals
+        validations = await validator.validate_multiple_signals(signals_data, market_context)
+        
+        # Update signals with validation metadata
+        validation_results = []
+        for signal, validation in zip(signals, validations):
+            signal.metadata = signal.metadata or {}
+            validation_metadata = validator.get_execution_metadata(validation)
+            signal.metadata.update(validation_metadata)
+            signal.metadata["llm_validated_at"] = str(datetime.utcnow())
+            
+            validation_results.append({
+                "signal_id": signal.id,
+                "symbol": signal.symbol,
+                "validation_result": validation.result.value,
+                "confidence": validation.confidence,
+                "reasoning": validation.reasoning,
+                "should_execute": validator.should_execute_signal(validation),
+                "execution_priority": validation.execution_priority
+            })
+        
+        await db.commit()
+        
+        # Summary statistics
+        approved_count = sum(1 for v in validations if v.result == ValidationResult.APPROVE)
+        rejected_count = sum(1 for v in validations if v.result == ValidationResult.REJECT)
+        caution_count = sum(1 for v in validations if v.result == ValidationResult.CAUTION)
+        
+        return {
+            "total_validated": len(validations),
+            "approved": approved_count,
+            "rejected": rejected_count, 
+            "caution": caution_count,
+            "results": validation_results
+        }
+        
+    except Exception as e:
+        logger.error(f"Error validating signals batch: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Batch validation failed: {str(e)}")
+
+@router.get("/validation/status")
+async def get_validation_status() -> Dict[str, Any]:
+    """
+    Get LLM validation service status and configuration
+    """
+    try:
+        validator = get_signal_validator()
+        
+        return {
+            "validation_enabled": validator.validation_enabled,
+            "primary_provider": validator.primary_provider,
+            "timeout_seconds": validator.validation_timeout,
+            "min_confidence_threshold": validator.min_confidence_threshold,
+            "openai_available": validator.openai_client is not None,
+            "anthropic_available": validator.anthropic_client is not None,
+            "fallback_mode": not validator.validation_enabled
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting validation status: {str(e)}")
+        return {
+            "validation_enabled": False,
+            "error": str(e)
+        }
