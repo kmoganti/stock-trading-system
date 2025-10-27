@@ -59,12 +59,29 @@ class ExternalMarketStreamService:
             self.iifl_service = IIFLAPIService()
             auth_result = await self.iifl_service.authenticate()
             
-            if not auth_result or not self.iifl_service.session_token:
-                logger.error("IIFL authentication failed - cannot start market stream")
+            # Check for authentication errors
+            if not auth_result:
+                logger.error("❌ IIFL authentication failed - cannot start market stream")
+                return False
+            
+            # Check for specific authentication issues
+            if isinstance(auth_result, dict):
+                if auth_result.get("auth_code_expired"):
+                    logger.error("🔒 Auth code has expired. Please update IIFL_AUTH_CODE in .env file")
+                    logger.error("Market stream service cannot continue - exiting")
+                    return False
+                    
+                if auth_result.get("error"):
+                    logger.error(f"❌ Authentication error: {auth_result['error']}")
+                    logger.error("Market stream service cannot continue - exiting")
+                    return False
+            
+            if not self.iifl_service.session_token:
+                logger.error("❌ No session token received - authentication failed")
                 return False
                 
             if self.iifl_service.session_token.startswith("mock_"):
-                logger.warning("Using mock token - market stream will not connect to real bridge")
+                logger.warning("⚠️ Using mock token - market stream will not connect to real bridge")
                 return False
             
             logger.info("IIFL authentication successful")
@@ -112,7 +129,8 @@ class ExternalMarketStreamService:
     async def run_forever(self):
         """Run the service until interrupted"""
         if not await self.start():
-            return
+            logger.error("🛑 Market stream service failed to start - exiting")
+            sys.exit(1)
         
         try:
             # Keep running and monitoring connection

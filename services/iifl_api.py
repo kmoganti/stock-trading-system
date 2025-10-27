@@ -126,7 +126,7 @@ class IIFLAPIService:
     async def get_http_client(self) -> httpx.AsyncClient:
         """Get or create an httpx.AsyncClient instance."""
         if self.http_client is None or self.http_client.is_closed:
-            self.http_client = httpx.AsyncClient(timeout=30.0)
+            self.http_client = httpx.AsyncClient()
         return self.http_client
 
     async def close_http_client(self):
@@ -226,6 +226,7 @@ class IIFLAPIService:
         
         try:
             client = await self.get_http_client()
+            # Make HTTP request without additional timeout wrapper
             response = await client.post(url, headers=headers, data=json.dumps(payload))
             response_time = time.time() - start_time
             
@@ -277,7 +278,7 @@ class IIFLAPIService:
                 "response_time": response_time
             })
             
-            return {}
+            return {"error": f"Network error: {str(e)}"}
     
     async def authenticate(self, client_id: Optional[str] = None, auth_code: Optional[str] = None, app_secret: Optional[str] = None) -> dict:
         """Authenticate with IIFL API, protected by a lock to prevent race conditions."""
@@ -295,12 +296,20 @@ class IIFLAPIService:
                 self.app_secret = app_secret
 
             if not self.auth_code:
-                logger.error("No auth code available for authentication")
+                print("❌ No auth code available for authentication")
                 return {"error": "No auth code available for authentication"}
+            
+            # Immediately check for known expired auth codes to prevent hanging HTTP calls
+            known_expired_codes = ["N49IQQZCRVCQQ6HL9VEX", "123456", "999999"]  
+            if self.auth_code in known_expired_codes:
+                # Use print instead of logger to avoid hanging
+                print(f"🔒 KNOWN EXPIRED AUTH CODE DETECTED: {self.auth_code}")
+                print("💡 Please update IIFL_AUTH_CODE in .env file with a fresh code")
+                print("❌ Skipping HTTP call to prevent hanging")
+                return {"error": "Known expired auth code", "auth_code_expired": True}
             
             try:
                 logger.info("Attempting IIFL API authentication with checksum method")
-                
                 response_data = await self.get_user_session(self.auth_code)
                 
                 if response_data:
@@ -328,23 +337,38 @@ class IIFLAPIService:
                         logger.error(f"IIFL authentication failed: {error_msg}")
                         trading_logger.log_error("iifl_auth_failed", {"error_message": error_msg})
                 
-                # If authentication fails, allow mock token only in non-production
-                logger.error("IIFL authentication failed")
+                # If authentication fails, handle based on environment
+                logger.error("IIFL authentication failed - invalid or expired auth code")
                 env_name = str(getattr(self.settings, "environment", "development")).lower()
+                
+                # Check if auth code appears to be expired (common error patterns)
+                if response_data and isinstance(response_data, dict):
+                    error_msg = response_data.get("emsg") or response_data.get("message", "")
+                    if any(keyword in error_msg.lower() for keyword in ["expired", "invalid", "unauthorized", "forbidden", "not_ok"]):
+                        logger.error(f"🚨 AUTH CODE EXPIRED OR INVALID: {error_msg}")
+                        logger.error("💡 Please update your IIFL_AUTH_CODE in the .env file")
+                        # Return immediately for expired codes - don't try fallbacks
+                        return {"error": f"Auth failed: {error_msg}", "auth_code_expired": True}
+                
                 if env_name in ["development", "dev", "test", "testing"]:
-                    logger.info("Creating mock session for development/testing")
+                    logger.warning("⚠️  Using mock session for development/testing")
                     self.session_token = f"mock_token_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                     return {"access_token": self.session_token, "expires_in": 3600}
-                return {"error": "Authentication failed"}
+                
+                logger.error("❌ Authentication failed in production environment")
+                return {"error": "Authentication failed - check auth code", "auth_code_expired": True}
                     
             except Exception as e:
                 logger.error(f"IIFL API authentication exception: {str(e)}")
                 env_name = str(getattr(self.settings, "environment", "development")).lower()
+                
                 if env_name in ["development", "dev", "test", "testing"]:
-                    logger.info("Creating mock session for development/testing")
+                    logger.warning("⚠️  Using mock session for development/testing due to exception")
                     self.session_token = f"mock_token_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                     return {"access_token": self.session_token, "expires_in": 3600}
-                return {"error": f"Authentication exception: {str(e)}"}
+                
+                logger.error("❌ Authentication exception in production environment")
+                return {"error": f"Authentication exception: {str(e)}", "critical_error": True}
     
     async def _ensure_authenticated(self) -> bool:
         """Ensure we have a valid authentication"""

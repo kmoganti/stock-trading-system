@@ -77,13 +77,24 @@ async def update_auth_code(auth_data: AuthCodeUpdate):
         service._initialize_auth_expiry()
         
         # Test authentication with detailed error reporting
-        success = await service.authenticate()
+        auth_result = await service.authenticate()
         
-        if success:
+        if auth_result and not isinstance(auth_result, dict) or (isinstance(auth_result, dict) and auth_result.get("access_token")):
             logger.info("Auth code updated and authentication successful.")
             return {"message": "Auth code updated successfully", "success": True}
         else:
-            # Provide more specific error message
+            # Provide specific error message based on auth result
+            if isinstance(auth_result, dict):
+                if auth_result.get("auth_code_expired"):
+                    error_msg = "❌ The provided auth code has already expired"
+                    logger.warning(f"New auth code expired: {auth_code[:8]}...")
+                    raise HTTPException(status_code=400, detail=error_msg)
+                elif auth_result.get("error"):
+                    error_msg = f"❌ Authentication failed: {auth_result['error']}"
+                    logger.warning(f"Auth failed for code: {auth_code[:8]}...")
+                    raise HTTPException(status_code=400, detail=error_msg)
+            
+            # Generic error message
             error_msg = "Authentication failed. This could be due to:"
             error_details = [
                 "• Invalid or expired auth code",
@@ -107,12 +118,23 @@ async def refresh_token():
     logger.info("Request to refresh authentication token.")
     try:
         service = IIFLAPIService()
-        success = await service.authenticate()
+        auth_result = await service.authenticate()
         
-        if success:
+        if auth_result and not isinstance(auth_result, dict) or (isinstance(auth_result, dict) and auth_result.get("access_token")):
             logger.info("Token refreshed successfully.")
             return {"message": "Token refreshed successfully", "success": True}
         else:
+            # Provide specific error message based on auth result
+            if isinstance(auth_result, dict):
+                if auth_result.get("auth_code_expired"):
+                    error_msg = "🔒 Auth code has expired. Please update IIFL_AUTH_CODE in .env file"
+                    logger.warning("Token refresh failed: auth code expired")
+                    raise HTTPException(status_code=401, detail=error_msg)
+                elif auth_result.get("error"):
+                    error_msg = f"❌ Token refresh failed: {auth_result['error']}"
+                    logger.warning("Token refresh failed")
+                    raise HTTPException(status_code=400, detail=error_msg)
+            
             logger.warning("Token refresh failed.")
             raise HTTPException(status_code=400, detail="Token refresh failed")
                 

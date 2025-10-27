@@ -1,0 +1,667 @@
+{% extends "base.html" %}
+
+{% block title %}Backtesting - Stock Trading System{% endblock %}
+
+{% block content %}
+<div x-data="backtestPage" class="space-y-6">
+    <!-- Header -->
+    <div class="bg-white shadow rounded-lg card-shadow">
+        <div class="px-4 py-5 sm:p-6">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h1 class="text-2xl font-bold text-gray-900">Strategy Backtesting</h1>
+                    <p class="mt-1 text-sm text-gray-500">Test trading strategies against historical data</p>
+                </div>
+                <div class="flex items-center space-x-3">
+                    <button @click="refreshResults" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+                        <i class="fas fa-sync-alt mr-2"></i>
+                        Refresh
+                    </button>
+                    <button @click="showBacktestModal = true" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                        <i class="fas fa-chart-line mr-2"></i>
+                        Run Backtest
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick Stats -->
+    <div x-show="backtestStats.totalRuns > 0" class="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-play text-blue-600 text-xl"></i>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Total Runs</dt>
+                            <dd class="text-lg font-medium text-gray-900" x-text="backtestStats.totalRuns"></dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-trophy text-green-600 text-xl"></i>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Best Return</dt>
+                            <dd class="text-lg font-medium text-green-600" x-text="backtestStats.bestReturn + '%'"></dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-percentage text-indigo-600 text-xl"></i>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Avg Return</dt>
+                            <dd class="text-lg font-medium text-indigo-600" x-text="backtestStats.avgReturn + '%'"></dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-5">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-shield-alt text-orange-600 text-xl"></i>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-500 truncate">Max Drawdown</dt>
+                            <dd class="text-lg font-medium text-orange-600" x-text="backtestStats.maxDrawdown + '%'"></dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Backtest Results -->
+    <div class="bg-white shadow rounded-lg card-shadow">
+        <div class="px-4 py-5 sm:p-6">
+            <h3 class="text-lg font-medium text-gray-900 mb-4">Backtest Results</h3>
+            
+            <!-- Loading State -->
+            <div x-show="isLoading" class="text-center py-8">
+                <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                <p class="mt-2 text-sm text-gray-500">Loading backtest results...</p>
+            </div>
+
+            <!-- Empty State -->
+            <div x-show="!isLoading && backtestResults.length === 0" class="text-center py-12">
+                <i class="fas fa-chart-line text-gray-400 text-4xl mb-4"></i>
+                <h3 class="text-lg font-medium text-gray-900 mb-2">No Backtest Results</h3>
+                <p class="text-gray-500 mb-4">Run your first backtest to see performance metrics and analysis.</p>
+                <button @click="showBacktestModal = true" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700">
+                    <i class="fas fa-play mr-2"></i>
+                    Run Backtest
+                </button>
+            </div>
+
+            <!-- Results Table -->
+            <div x-show="!isLoading && backtestResults.length > 0" class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Strategy</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Period</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Return</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Annual Return</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Max Drawdown</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Sharpe Ratio</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Win Rate</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200">
+                        <template x-for="result in backtestResults" :key="result.id">
+                            <tr class="hover:bg-gray-50">
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <div class="flex items-center">
+                                        <div class="flex-shrink-0 h-8 w-8">
+                                            <div class="h-8 w-8 rounded-full flex items-center justify-center text-xs font-medium text-white"
+                                                 :class="getStrategyColor(result.strategy)">
+                                                <i :class="getStrategyIcon(result.strategy)"></i>
+                                            </div>
+                                        </div>
+                                        <div class="ml-4">
+                                            <div class="text-sm font-medium text-gray-900" x-text="result.strategy_name"></div>
+                                            <div class="text-sm text-gray-500" x-text="result.strategy"></div>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                    <div x-text="formatDateRange(result.start_date, result.end_date)"></div>
+                                    <div class="text-xs text-gray-500" x-text="result.duration + ' days'"></div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <span class="text-sm font-medium" :class="result.total_return >= 0 ? 'text-green-600' : 'text-red-600'" 
+                                          x-text="result.total_return + '%'"></span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <span class="text-sm font-medium" :class="result.annual_return >= 0 ? 'text-green-600' : 'text-red-600'" 
+                                          x-text="result.annual_return + '%'"></span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-red-600" x-text="result.max_drawdown + '%'"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="result.sharpe_ratio"></td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium"
+                                          :class="result.win_rate >= 60 ? 'bg-green-100 text-green-800' : result.win_rate >= 40 ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800'">
+                                        <span x-text="result.win_rate + '%'"></span>
+                                    </span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                    <button @click="viewDetails(result)" class="text-blue-600 hover:text-blue-900 mr-3">
+                                        <i class="fas fa-eye"></i>
+                                    </button>
+                                    <button @click="deleteResult(result.id)" class="text-red-600 hover:text-red-900">
+                                        <i class="fas fa-trash"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Backtest Configuration Modal -->
+    <div x-show="showBacktestModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50" x-cloak>
+        <div class="relative top-10 mx-auto p-5 border w-full max-w-4xl shadow-lg rounded-md bg-white">
+            <div class="flex items-center justify-between mb-6">
+                <h3 class="text-xl font-bold text-gray-900">Configure Backtest</h3>
+                <button @click="showBacktestModal = false" class="text-gray-400 hover:text-gray-600">
+                    <i class="fas fa-times text-xl"></i>
+                </button>
+            </div>
+
+            <form @submit.prevent="runBacktest" class="space-y-6">
+                <!-- Strategy Selection -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Strategy Type</label>
+                        <select x-model="backtestConfig.strategy" class="block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md">
+                            <option value="long_term">Long Term Trading</option>
+                            <option value="short_term">Short Term Trading</option>
+                            <option value="day_trading">Day Trading</option>
+                            <option value="short_selling">Short Selling</option>
+                            <option value="combined">Combined Strategy</option>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Initial Capital (₹)</label>
+                        <input type="number" x-model="backtestConfig.initial_capital" min="10000" step="1000"
+                               class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                    </div>
+                </div>
+
+                <!-- Date Range -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Start Date</label>
+                        <input type="date" x-model="backtestConfig.start_date"
+                               class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">End Date</label>
+                        <input type="date" x-model="backtestConfig.end_date"
+                               class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                    </div>
+                </div>
+
+                <!-- Advanced Options -->
+                <div class="border-t pt-6">
+                    <h4 class="text-lg font-medium text-gray-900 mb-4">Advanced Options</h4>
+                    
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Commission (%)</label>
+                            <input type="number" x-model="backtestConfig.commission" min="0" max="5" step="0.01"
+                                   class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                        </div>
+
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Slippage (%)</label>
+                            <input type="number" x-model="backtestConfig.slippage" min="0" max="2" step="0.01"
+                                   class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                        </div>
+
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Max Positions</label>
+                            <input type="number" x-model="backtestConfig.max_positions" min="1" max="50"
+                                   class="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+                        </div>
+                    </div>
+
+                    <div class="mt-4">
+                        <label class="flex items-center">
+                            <input type="checkbox" x-model="backtestConfig.include_dividends" class="rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50">
+                            <span class="ml-2 text-sm text-gray-700">Include dividends in calculations</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Progress Bar -->
+                <div x-show="backtestInProgress" class="space-y-2">
+                    <div class="flex items-center justify-between text-sm">
+                        <span class="text-gray-600" x-text="backtestStatus"></span>
+                        <span class="text-gray-600" x-text="backtestProgress + '%'"></span>
+                    </div>
+                    <div class="w-full bg-gray-200 rounded-full h-2">
+                        <div class="bg-blue-600 h-2 rounded-full transition-all duration-300" :style="'width: ' + backtestProgress + '%'"></div>
+                    </div>
+                </div>
+
+                <!-- Action Buttons -->
+                <div class="flex justify-end space-x-3 pt-6 border-t">
+                    <button type="button" @click="showBacktestModal = false" 
+                            class="px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+                        Cancel
+                    </button>
+                    <button type="submit" :disabled="backtestInProgress"
+                            class="px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">
+                        <i class="fas fa-play mr-2"></i>
+                        <span x-text="backtestInProgress ? 'Running...' : 'Run Backtest'"></span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Backtest Details Modal -->
+    <div x-show="showDetailsModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50" x-cloak>
+        <div class="relative top-10 mx-auto p-5 border w-full max-w-6xl shadow-lg rounded-md bg-white">
+            <div class="flex items-center justify-between mb-6">
+                <div>
+                    <h3 class="text-xl font-bold text-gray-900">Backtest Details</h3>
+                    <p class="text-sm text-gray-500" x-show="selectedResult">
+                        <span x-text="selectedResult?.strategy_name"></span> - 
+                        <span x-text="formatDateRange(selectedResult?.start_date, selectedResult?.end_date)"></span>
+                    </p>
+                </div>
+                <button @click="showDetailsModal = false" class="text-gray-400 hover:text-gray-600">
+                    <i class="fas fa-times text-xl"></i>
+                </button>
+            </div>
+
+            <div x-show="selectedResult" class="space-y-6">
+                <!-- Performance Metrics -->
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div class="bg-gray-50 p-4 rounded-lg">
+                        <div class="text-sm font-medium text-gray-500">Total Return</div>
+                        <div class="text-2xl font-bold" :class="selectedResult?.total_return >= 0 ? 'text-green-600' : 'text-red-600'" 
+                             x-text="selectedResult?.total_return + '%'"></div>
+                    </div>
+                    <div class="bg-gray-50 p-4 rounded-lg">
+                        <div class="text-sm font-medium text-gray-500">Annual Return</div>
+                        <div class="text-2xl font-bold" :class="selectedResult?.annual_return >= 0 ? 'text-green-600' : 'text-red-600'" 
+                             x-text="selectedResult?.annual_return + '%'"></div>
+                    </div>
+                    <div class="bg-gray-50 p-4 rounded-lg">
+                        <div class="text-sm font-medium text-gray-500">Sharpe Ratio</div>
+                        <div class="text-2xl font-bold text-blue-600" x-text="selectedResult?.sharpe_ratio"></div>
+                    </div>
+                    <div class="bg-gray-50 p-4 rounded-lg">
+                        <div class="text-sm font-medium text-gray-500">Max Drawdown</div>
+                        <div class="text-2xl font-bold text-red-600" x-text="selectedResult?.max_drawdown + '%'"></div>
+                    </div>
+                </div>
+
+                <!-- Equity Curve Chart -->
+                <div class="bg-white border rounded-lg p-4">
+                    <h4 class="text-lg font-medium text-gray-900 mb-4">Equity Curve</h4>
+                    <div class="h-64 flex items-center justify-center bg-gray-50 rounded">
+                        <canvas id="equityCurveChart" class="w-full h-full"></canvas>
+                    </div>
+                </div>
+
+                <!-- Trade Statistics -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div class="bg-white border rounded-lg p-4">
+                        <h4 class="text-lg font-medium text-gray-900 mb-4">Trade Statistics</h4>
+                        <div class="space-y-2">
+                            <div class="flex justify-between">
+                                <span class="text-sm text-gray-600">Total Trades:</span>
+                                <span class="text-sm font-medium" x-text="selectedResult?.total_trades"></span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-sm text-gray-600">Winning Trades:</span>
+                                <span class="text-sm font-medium text-green-600" x-text="selectedResult?.winning_trades"></span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-sm text-gray-600">Losing Trades:</span>
+                                <span class="text-sm font-medium text-red-600" x-text="selectedResult?.losing_trades"></span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-sm text-gray-600">Win Rate:</span>
+                                <span class="text-sm font-medium" x-text="selectedResult?.win_rate + '%'"></span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-white border rounded-lg p-4">
+                        <h4 class="text-lg font-medium text-gray-900 mb-4">Risk Metrics</h4>
+                        <div class="space-y-2">
+                            <div class="flex justify-between">
+                                <span class="text-sm text-gray-600">Volatility:</span>
+                                <span class="text-sm font-medium" x-text="selectedResult?.volatility + '%'"></span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-sm text-gray-600">Beta:</span>
+                                <span class="text-sm font-medium" x-text="selectedResult?.beta"></span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-sm text-gray-600">VaR (95%):</span>
+                                <span class="text-sm font-medium text-red-600" x-text="selectedResult?.var_95 + '%'"></span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="text-sm text-gray-600">Calmar Ratio:</span>
+                                <span class="text-sm font-medium" x-text="selectedResult?.calmar_ratio"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('alpine:init', () => {
+    Alpine.data('backtestPage', () => ({
+        backtestResults: [],
+        isLoading: false,
+        
+        // Modal states
+        showBacktestModal: false,
+        showDetailsModal: false,
+        selectedResult: null,
+        
+        // Backtest execution
+        backtestInProgress: false,
+        backtestStatus: '',
+        backtestProgress: 0,
+        
+        // Statistics
+        backtestStats: {
+            totalRuns: 0,
+            bestReturn: 0,
+            avgReturn: 0,
+            maxDrawdown: 0
+        },
+        
+        // Configuration
+        backtestConfig: {
+            strategy: 'long_term',
+            initial_capital: 100000,
+            start_date: '',
+            end_date: '',
+            commission: 0.1,
+            slippage: 0.05,
+            max_positions: 10,
+            include_dividends: true
+        },
+        
+        async init() {
+            // Set default dates
+            const endDate = new Date();
+            const startDate = new Date();
+            startDate.setFullYear(endDate.getFullYear() - 1);
+            
+            this.backtestConfig.end_date = endDate.toISOString().split('T')[0];
+            this.backtestConfig.start_date = startDate.toISOString().split('T')[0];
+            
+            await this.loadResults();
+        },
+        
+        async loadResults() {
+            this.isLoading = true;
+            try {
+                const response = await fetch('/api/backtest/results');
+                const data = await response.json();
+                
+                this.backtestResults = data.results || [];
+                this.updateStats();
+                
+            } catch (error) {
+                console.error('Error loading backtest results:', error);
+                showToast('Error loading backtest results', 'error');
+            } finally {
+                this.isLoading = false;
+            }
+        },
+        
+        updateStats() {
+            if (this.backtestResults.length === 0) {
+                this.backtestStats = {
+                    totalRuns: 0,
+                    bestReturn: 0,
+                    avgReturn: 0,
+                    maxDrawdown: 0
+                };
+                return;
+            }
+            
+            const returns = this.backtestResults.map(r => r.total_return);
+            const drawdowns = this.backtestResults.map(r => Math.abs(r.max_drawdown));
+            
+            this.backtestStats = {
+                totalRuns: this.backtestResults.length,
+                bestReturn: Math.max(...returns).toFixed(2),
+                avgReturn: (returns.reduce((a, b) => a + b, 0) / returns.length).toFixed(2),
+                maxDrawdown: Math.max(...drawdowns).toFixed(2)
+            };
+        },
+        
+        async runBacktest() {
+            this.backtestInProgress = true;
+            this.backtestProgress = 0;
+            this.backtestStatus = 'Initializing backtest...';
+            
+            try {
+                // Simulate progress updates
+                const progressInterval = setInterval(() => {
+                    if (this.backtestProgress < 90) {
+                        this.backtestProgress += Math.random() * 10;
+                        if (this.backtestProgress < 30) {
+                            this.backtestStatus = 'Loading historical data...';
+                        } else if (this.backtestProgress < 60) {
+                            this.backtestStatus = 'Running strategy simulation...';
+                        } else if (this.backtestProgress < 90) {
+                            this.backtestStatus = 'Calculating performance metrics...';
+                        }
+                    }
+                }, 500);
+                
+                const response = await fetch('/api/backtest/run', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(this.backtestConfig)
+                });
+                
+                clearInterval(progressInterval);
+                this.backtestProgress = 100;
+                this.backtestStatus = 'Backtest completed!';
+                
+                const result = await response.json();
+                
+                if (response.ok && result.success) {
+                    showToast('Backtest completed successfully!', 'success');
+                    this.showBacktestModal = false;
+                    await this.loadResults();
+                } else {
+                    throw new Error(result.message || 'Backtest failed');
+                }
+                
+            } catch (error) {
+                console.error('Error running backtest:', error);
+                showToast(error.message || 'Error running backtest', 'error');
+            } finally {
+                this.backtestInProgress = false;
+                this.backtestProgress = 0;
+                this.backtestStatus = '';
+            }
+        },
+        
+        async refreshResults() {
+            await this.loadResults();
+            showToast('Results refreshed', 'success');
+        },
+        
+        viewDetails(result) {
+            this.selectedResult = result;
+            this.showDetailsModal = true;
+            
+            // Initialize chart after modal is shown
+            this.$nextTick(() => {
+                this.initEquityCurveChart();
+            });
+        },
+        
+        async deleteResult(resultId) {
+            if (!confirm('Are you sure you want to delete this backtest result?')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/backtest/results/${resultId}`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.ok) {
+                    showToast('Backtest result deleted', 'success');
+                    await this.loadResults();
+                } else {
+                    throw new Error('Failed to delete result');
+                }
+                
+            } catch (error) {
+                console.error('Error deleting result:', error);
+                showToast('Error deleting result', 'error');
+            }
+        },
+        
+        initEquityCurveChart() {
+            const canvas = document.getElementById('equityCurveChart');
+            if (!canvas || !this.selectedResult) return;
+            
+            const ctx = canvas.getContext('2d');
+            
+            // Sample equity curve data
+            const data = this.generateSampleEquityCurve();
+            
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: data.dates,
+                    datasets: [{
+                        label: 'Portfolio Value',
+                        data: data.values,
+                        borderColor: 'rgb(59, 130, 246)',
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        fill: true,
+                        tension: 0.1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: false,
+                            ticks: {
+                                callback: function(value) {
+                                    return '₹' + value.toLocaleString();
+                                }
+                            }
+                        }
+                    },
+                    plugins: {
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return 'Value: ₹' + context.parsed.y.toLocaleString();
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        },
+        
+        generateSampleEquityCurve() {
+            const startValue = this.backtestConfig.initial_capital;
+            const endValue = startValue * (1 + this.selectedResult.total_return / 100);
+            const duration = this.selectedResult.duration;
+            
+            const dates = [];
+            const values = [];
+            
+            for (let i = 0; i <= Math.min(duration, 100); i++) {
+                const date = new Date(this.selectedResult.start_date);
+                date.setDate(date.getDate() + (i * duration / 100));
+                dates.push(date.toLocaleDateString());
+                
+                // Generate sample curve with some volatility
+                const progress = i / 100;
+                const trend = startValue + (endValue - startValue) * progress;
+                const volatility = (Math.random() - 0.5) * startValue * 0.05;
+                values.push(Math.max(startValue * 0.8, trend + volatility));
+            }
+            
+            return { dates, values };
+        },
+        
+        getStrategyColor(strategy) {
+            const colors = {
+                'long_term': 'bg-blue-500',
+                'short_term': 'bg-green-500',
+                'day_trading': 'bg-yellow-500',
+                'short_selling': 'bg-red-500',
+                'combined': 'bg-purple-500'
+            };
+            return colors[strategy] || 'bg-gray-500';
+        },
+        
+        getStrategyIcon(strategy) {
+            const icons = {
+                'long_term': 'fas fa-chart-line',
+                'short_term': 'fas fa-bolt',
+                'day_trading': 'fas fa-clock',
+                'short_selling': 'fas fa-arrow-down',
+                'combined': 'fas fa-layer-group'
+            };
+            return icons[strategy] || 'fas fa-chart-bar';
+        },
+        
+        formatDateRange(startDate, endDate) {
+            const start = new Date(startDate).toLocaleDateString();
+            const end = new Date(endDate).toLocaleDateString();
+            return `${start} - ${end}`;
+        }
+    }));
+});
+</script>
+{% endblock %}

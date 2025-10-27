@@ -167,6 +167,15 @@ async def lifespan(app: FastAPI):
             auth_result = await iifl_service.authenticate()
             log_timing(f"IIFL authentication completed: {auth_result}")
             
+            # Check for authentication errors
+            if isinstance(auth_result, dict):
+                if auth_result.get("auth_code_expired"):
+                    logger.error("🔒 Auth code has expired. Please update IIFL_AUTH_CODE in .env file")
+                    log_timing("Authentication failed: auth code expired")
+                elif auth_result.get("error"):
+                    logger.error(f"❌ Authentication error: {auth_result['error']}")
+                    log_timing(f"Authentication failed: {auth_result['error']}")
+            
             if auth_result and not iifl_service.session_token.startswith("mock_"):
                 log_timing("IIFL authentication successful, starting database session")
                 async with AsyncSessionLocal() as session:
@@ -431,6 +440,16 @@ async def reports_page(request: Request):
 async def signals_page(request: Request):
     """Signals management page"""
     return templates.TemplateResponse("signals.html", {"request": request})
+
+@app.get("/backtest")
+async def backtest_page(request: Request):
+    """Backtesting page"""
+    return templates.TemplateResponse("backtest.html", {"request": request})
+
+@app.get("/risk-monitor")
+async def risk_monitor_page(request: Request):
+    """Real-time risk monitoring page"""
+    return templates.TemplateResponse("risk-monitor.html", {"request": request})
 
 @app.get("/portfolio")
 async def portfolio_page(request: Request):

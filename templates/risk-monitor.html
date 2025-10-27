@@ -1,0 +1,512 @@
+{% extends "base.html" %}
+
+{% block title %}Risk Monitor - Stock Trading System{% endblock %}
+
+{% block content %}
+<div x-data="riskMonitorPage" class="space-y-6">
+    <!-- Header with Status -->
+    <div class="bg-white shadow rounded-lg card-shadow">
+        <div class="px-4 py-5 sm:p-6">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h1 class="text-2xl font-bold text-gray-900">Real-Time Risk Monitor</h1>
+                    <p class="mt-1 text-sm text-gray-500">Live monitoring and emergency controls</p>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <!-- Monitoring Status -->
+                    <div class="flex items-center space-x-2">
+                        <div :class="status.is_monitoring ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'" 
+                             class="px-3 py-1 rounded-full text-sm font-medium">
+                            <i :class="status.is_monitoring ? 'fas fa-eye text-green-600' : 'fas fa-eye-slash text-red-600'" class="mr-1"></i>
+                            <span x-text="status.is_monitoring ? 'Monitoring Active' : 'Not Monitoring'"></span>
+                        </div>
+                    </div>
+                    
+                    <!-- Emergency Status -->
+                    <div x-show="status.emergency_halt" class="flex items-center space-x-2">
+                        <div class="bg-red-100 text-red-800 px-3 py-1 rounded-full text-sm font-medium animate-pulse">
+                            <i class="fas fa-exclamation-triangle text-red-600 mr-1"></i>
+                            Emergency Halt Active
+                        </div>
+                    </div>
+                    
+                    <!-- Control Buttons -->
+                    <div class="flex space-x-2">
+                        <button @click="status.is_monitoring ? stopMonitoring() : startMonitoring()" 
+                                :class="status.is_monitoring ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'"
+                                class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white focus:outline-none focus:ring-2 focus:ring-offset-2">
+                            <i :class="status.is_monitoring ? 'fas fa-stop' : 'fas fa-play'" class="mr-2"></i>
+                            <span x-text="status.is_monitoring ? 'Stop Monitor' : 'Start Monitor'"></span>
+                        </button>
+                        
+                        <button @click="refreshData" class="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50">
+                            <i class="fas fa-sync-alt mr-2"></i>
+                            Refresh
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Risk Metrics Dashboard -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- Portfolio Overview -->
+        <div class="bg-white shadow rounded-lg card-shadow">
+            <div class="px-4 py-5 sm:p-6">
+                <h3 class="text-lg font-medium text-gray-900 mb-4">Portfolio Overview</h3>
+                <div class="space-y-4">
+                    <div class="flex justify-between items-center">
+                        <span class="text-sm text-gray-600">Total Value</span>
+                        <span class="text-lg font-semibold" x-text="formatCurrency(metrics.total_portfolio_value)"></span>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-sm text-gray-600">Available Margin</span>
+                        <span class="text-lg font-semibold text-green-600" x-text="formatCurrency(metrics.available_margin)"></span>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-sm text-gray-600">Used Margin</span>
+                        <span class="text-lg font-semibold text-orange-600" x-text="formatCurrency(metrics.used_margin)"></span>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-sm text-gray-600">Open Positions</span>
+                        <span class="text-lg font-semibold" x-text="metrics.open_positions_count"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- P&L Tracking -->
+        <div class="bg-white shadow rounded-lg card-shadow">
+            <div class="px-4 py-5 sm:p-6">
+                <h3 class="text-lg font-medium text-gray-900 mb-4">P&L Tracking</h3>
+                <div class="space-y-4">
+                    <div class="flex justify-between items-center">
+                        <span class="text-sm text-gray-600">Daily P&L</span>
+                        <span :class="metrics.daily_pnl >= 0 ? 'text-green-600' : 'text-red-600'" 
+                              class="text-lg font-semibold" x-text="formatCurrency(metrics.daily_pnl)"></span>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-sm text-gray-600">Daily P&L %</span>
+                        <span :class="metrics.daily_pnl_percentage >= 0 ? 'text-green-600' : 'text-red-600'" 
+                              class="text-lg font-semibold" x-text="metrics.daily_pnl_percentage.toFixed(2) + '%'"></span>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-sm text-gray-600">Unrealized P&L</span>
+                        <span :class="metrics.unrealized_pnl >= 0 ? 'text-green-600' : 'text-red-600'" 
+                              class="text-lg font-semibold" x-text="formatCurrency(metrics.unrealized_pnl)"></span>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-sm text-gray-600">Realized P&L</span>
+                        <span :class="metrics.realized_pnl >= 0 ? 'text-green-600' : 'text-red-600'" 
+                              class="text-lg font-semibold" x-text="formatCurrency(metrics.realized_pnl)"></span>
+                    </div>
+                </div>
+                
+                <!-- P&L Progress Bar -->
+                <div class="mt-4">
+                    <div class="flex justify-between text-sm text-gray-600 mb-1">
+                        <span>Daily Loss Limit</span>
+                        <span x-text="Math.abs(metrics.daily_pnl_percentage).toFixed(2) + '% of 6%'"></span>
+                    </div>
+                    <div class="w-full bg-gray-200 rounded-full h-2">
+                        <div :class="Math.abs(metrics.daily_pnl_percentage) > 4 ? 'bg-red-500' : Math.abs(metrics.daily_pnl_percentage) > 2 ? 'bg-yellow-500' : 'bg-green-500'"
+                             :style="`width: ${Math.min(Math.abs(metrics.daily_pnl_percentage) / 6 * 100, 100)}%`"
+                             class="h-2 rounded-full transition-all duration-300"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Risk Alerts -->
+        <div class="bg-white shadow rounded-lg card-shadow">
+            <div class="px-4 py-5 sm:p-6">
+                <h3 class="text-lg font-medium text-gray-900 mb-4">Recent Alerts</h3>
+                <div class="space-y-3 max-h-64 overflow-y-auto">
+                    <template x-for="alert in recentAlerts.slice(0, 5)" :key="alert.timestamp">
+                        <div :class="getSeverityClass(alert.severity)" class="p-3 rounded-lg">
+                            <div class="flex justify-between items-start">
+                                <div class="flex-1">
+                                    <p class="text-sm font-medium" x-text="alert.event_type"></p>
+                                    <p class="text-xs mt-1 opacity-75" x-text="formatTime(alert.timestamp)"></p>
+                                </div>
+                                <span :class="getSeverityBadgeClass(alert.severity)" 
+                                      class="px-2 py-1 text-xs rounded-full" x-text="alert.severity"></span>
+                            </div>
+                        </div>
+                    </template>
+                    <div x-show="recentAlerts.length === 0" class="text-center text-gray-500 py-4">
+                        <i class="fas fa-shield-check text-green-500 text-2xl mb-2"></i>
+                        <p class="text-sm">No recent alerts</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Emergency Controls -->
+    <div class="bg-white shadow rounded-lg card-shadow">
+        <div class="px-4 py-5 sm:p-6">
+            <h3 class="text-lg font-medium text-gray-900 mb-4">Emergency Controls</h3>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <button @click="showEmergencyHaltModal = true" 
+                        class="inline-flex items-center justify-center px-4 py-3 border border-red-300 text-sm font-medium rounded-md text-red-700 bg-red-50 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500">
+                    <i class="fas fa-hand-stop mr-2"></i>
+                    Emergency Halt
+                </button>
+                <button @click="closeAllPositions" 
+                        class="inline-flex items-center justify-center px-4 py-3 border border-orange-300 text-sm font-medium rounded-md text-orange-700 bg-orange-50 hover:bg-orange-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500">
+                    <i class="fas fa-times-circle mr-2"></i>
+                    Close All Positions
+                </button>
+                <button @click="clearEmergencyHalt" x-show="status.emergency_halt"
+                        class="inline-flex items-center justify-center px-4 py-3 border border-green-300 text-sm font-medium rounded-md text-green-700 bg-green-50 hover:bg-green-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500">
+                    <i class="fas fa-play mr-2"></i>
+                    Clear Emergency Halt
+                </button>
+                <button @click="viewDetailedLogs" 
+                        class="inline-flex items-center justify-center px-4 py-3 border border-blue-300 text-sm font-medium rounded-md text-blue-700 bg-blue-50 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                    <i class="fas fa-chart-line mr-2"></i>
+                    View Logs
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Current Positions -->
+    <div class="bg-white shadow rounded-lg card-shadow">
+        <div class="px-4 py-5 sm:p-6">
+            <h3 class="text-lg font-medium text-gray-900 mb-4">Current Positions</h3>
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Symbol</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Quantity</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Entry Price</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Current Price</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">P&L</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">P&L %</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Stop Loss</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200">
+                        <template x-for="position in positions" :key="position.symbol">
+                            <tr>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900" x-text="position.symbol"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="position.quantity"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="formatCurrency(position.entry_price)"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="formatCurrency(position.current_price)"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm" 
+                                    :class="position.unrealized_pnl >= 0 ? 'text-green-600' : 'text-red-600'" 
+                                    x-text="formatCurrency(position.unrealized_pnl)"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm" 
+                                    :class="position.pnl_percentage >= 0 ? 'text-green-600' : 'text-red-600'" 
+                                    x-text="position.pnl_percentage.toFixed(2) + '%'"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500" x-text="formatCurrency(position.stop_loss)"></td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                    <button @click="closePosition(position.symbol)" 
+                                            class="text-red-600 hover:text-red-900 text-xs bg-red-50 hover:bg-red-100 px-2 py-1 rounded">
+                                        Close
+                                    </button>
+                                </td>
+                            </tr>
+                        </template>
+                        <tr x-show="positions.length === 0">
+                            <td colspan="8" class="px-6 py-4 text-center text-gray-500">No open positions</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Emergency Halt Modal -->
+    <div x-show="showEmergencyHaltModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50" x-cloak>
+        <div class="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
+            <div class="mt-3 text-center">
+                <div class="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-red-100">
+                    <i class="fas fa-exclamation-triangle text-red-600 text-xl"></i>
+                </div>
+                <h3 class="text-lg font-medium text-gray-900 mt-4">Emergency Halt Confirmation</h3>
+                <div class="mt-2">
+                    <p class="text-sm text-gray-500">
+                        This will immediately halt all trading and close all open positions. This action cannot be undone.
+                    </p>
+                    <div class="mt-4">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Reason for Emergency Halt:</label>
+                        <textarea x-model="emergencyReason" 
+                                  class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-red-500 focus:border-red-500 sm:text-sm"
+                                  rows="3" placeholder="Enter reason for emergency halt..."></textarea>
+                    </div>
+                </div>
+                <div class="flex justify-center space-x-4 mt-6">
+                    <button @click="showEmergencyHaltModal = false" 
+                            class="px-4 py-2 bg-gray-300 text-gray-800 text-sm font-medium rounded-md hover:bg-gray-400">
+                        Cancel
+                    </button>
+                    <button @click="confirmEmergencyHalt" 
+                            class="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-md hover:bg-red-700">
+                        Confirm Emergency Halt
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script>
+document.addEventListener('alpine:init', () => {
+    Alpine.data('riskMonitorPage', () => ({
+        // State
+        status: {
+            is_monitoring: false,
+            emergency_halt: false,
+            positions_count: 0,
+            risk_metrics: {},
+            recent_events_count: 0,
+            last_update: ''
+        },
+        metrics: {
+            total_portfolio_value: 0,
+            available_margin: 0,
+            used_margin: 0,
+            daily_pnl: 0,
+            daily_pnl_percentage: 0,
+            unrealized_pnl: 0,
+            realized_pnl: 0,
+            open_positions_count: 0
+        },
+        positions: [],
+        recentAlerts: [],
+        
+        // Modal state
+        showEmergencyHaltModal: false,
+        emergencyReason: '',
+        
+        // Auto-refresh
+        refreshInterval: null,
+
+        async init() {
+            await this.refreshData();
+            this.startAutoRefresh();
+        },
+
+        async refreshData() {
+            try {
+                // Get monitoring status
+                const statusResponse = await fetch('/api/risk/monitor/status');
+                if (statusResponse.ok) {
+                    this.status = await statusResponse.json();
+                    this.metrics = this.status.risk_metrics || {};
+                }
+
+                // Get positions
+                const positionsResponse = await fetch('/api/risk/monitor/positions');
+                if (positionsResponse.ok) {
+                    this.positions = await positionsResponse.json();
+                }
+
+                // Get recent alerts
+                const alertsResponse = await fetch('/api/risk/alerts/live?limit=10');
+                if (alertsResponse.ok) {
+                    this.recentAlerts = await alertsResponse.json();
+                }
+
+            } catch (error) {
+                console.error('Error refreshing data:', error);
+                this.showToast('Error refreshing data', 'error');
+            }
+        },
+
+        async startMonitoring() {
+            try {
+                const response = await fetch('/api/risk/monitor/start', { method: 'POST' });
+                const result = await response.json();
+                
+                if (result.success) {
+                    this.showToast('Risk monitoring started', 'success');
+                    await this.refreshData();
+                } else {
+                    this.showToast('Failed to start monitoring', 'error');
+                }
+            } catch (error) {
+                console.error('Error starting monitoring:', error);
+                this.showToast('Error starting monitoring', 'error');
+            }
+        },
+
+        async stopMonitoring() {
+            try {
+                const response = await fetch('/api/risk/monitor/stop', { method: 'POST' });
+                const result = await response.json();
+                
+                if (result.success) {
+                    this.showToast('Risk monitoring stopped', 'warning');
+                    await this.refreshData();
+                } else {
+                    this.showToast('Failed to stop monitoring', 'error');
+                }
+            } catch (error) {
+                console.error('Error stopping monitoring:', error);
+                this.showToast('Error stopping monitoring', 'error');
+            }
+        },
+
+        async confirmEmergencyHalt() {
+            if (!this.emergencyReason.trim()) {
+                this.showToast('Please provide a reason for emergency halt', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/risk/emergency/halt', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action_type: 'EMERGENCY_HALT',
+                        reason: this.emergencyReason,
+                        confirm: true
+                    })
+                });
+
+                const result = await response.json();
+                
+                if (result.success) {
+                    this.showToast('Emergency halt triggered', 'warning');
+                    this.showEmergencyHaltModal = false;
+                    this.emergencyReason = '';
+                    await this.refreshData();
+                } else {
+                    this.showToast('Failed to trigger emergency halt', 'error');
+                }
+            } catch (error) {
+                console.error('Error triggering emergency halt:', error);
+                this.showToast('Error triggering emergency halt', 'error');
+            }
+        },
+
+        async closePosition(symbol) {
+            if (!confirm(`Are you sure you want to close position for ${symbol}?`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/risk/emergency/close-position/${symbol}`, {
+                    method: 'POST'
+                });
+
+                const result = await response.json();
+                
+                if (result.success) {
+                    this.showToast(`Position ${symbol} closed`, 'success');
+                    await this.refreshData();
+                } else {
+                    this.showToast(`Failed to close position ${symbol}`, 'error');
+                }
+            } catch (error) {
+                console.error('Error closing position:', error);
+                this.showToast('Error closing position', 'error');
+            }
+        },
+
+        async closeAllPositions() {
+            if (!confirm(`Are you sure you want to close ALL ${this.positions.length} positions?`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/risk/emergency/close-all', {
+                    method: 'POST'
+                });
+
+                const result = await response.json();
+                
+                if (result.success) {
+                    this.showToast(`All positions closed (${result.positions_closed})`, 'success');
+                    await this.refreshData();
+                } else {
+                    this.showToast('Failed to close all positions', 'error');
+                }
+            } catch (error) {
+                console.error('Error closing all positions:', error);
+                this.showToast('Error closing all positions', 'error');
+            }
+        },
+
+        async clearEmergencyHalt() {
+            try {
+                const response = await fetch('/api/risk/emergency/clear', { method: 'POST' });
+                const result = await response.json();
+                
+                if (result.success) {
+                    this.showToast('Emergency halt cleared', 'success');
+                    await this.refreshData();
+                } else {
+                    this.showToast('Failed to clear emergency halt', 'error');
+                }
+            } catch (error) {
+                console.error('Error clearing emergency halt:', error);
+                this.showToast('Error clearing emergency halt', 'error');
+            }
+        },
+
+        startAutoRefresh() {
+            if (this.refreshInterval) {
+                clearInterval(this.refreshInterval);
+            }
+            
+            this.refreshInterval = setInterval(() => {
+                this.refreshData();
+            }, 5000); // Refresh every 5 seconds
+        },
+
+        // Utility functions
+        formatCurrency(amount) {
+            if (amount === null || amount === undefined) return '₹0.00';
+            return '₹' + parseFloat(amount).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        },
+
+        formatTime(timestamp) {
+            return new Date(timestamp).toLocaleTimeString('en-IN');
+        },
+
+        getSeverityClass(severity) {
+            const classes = {
+                'low': 'bg-blue-50 text-blue-800',
+                'medium': 'bg-yellow-50 text-yellow-800',
+                'high': 'bg-orange-50 text-orange-800',
+                'critical': 'bg-red-50 text-red-800'
+            };
+            return classes[severity] || 'bg-gray-50 text-gray-800';
+        },
+
+        getSeverityBadgeClass(severity) {
+            const classes = {
+                'low': 'bg-blue-100 text-blue-800',
+                'medium': 'bg-yellow-100 text-yellow-800',
+                'high': 'bg-orange-100 text-orange-800',
+                'critical': 'bg-red-100 text-red-800'
+            };
+            return classes[severity] || 'bg-gray-100 text-gray-800';
+        },
+
+        viewDetailedLogs() {
+            // Navigate to detailed logs page or open modal
+            window.open('/events', '_blank');
+        },
+
+        showToast(message, type = 'info') {
+            // Use the global toast function
+            if (typeof showToast === 'function') {
+                showToast(message, type);
+            } else {
+                console.log(`[${type.toUpperCase()}] ${message}`);
+            }
+        }
+    }));
+});
+</script>
+{% endblock %}

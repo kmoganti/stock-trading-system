@@ -53,9 +53,24 @@ async def get_system_status(db: AsyncSession = Depends(get_db)) -> Dict[str, Any
         # Try to check IIFL API connectivity
         try:
             async with IIFLAPIService() as iifl:
-                api_connected = await iifl.authenticate()
-                status["iifl_api_connected"] = api_connected
-                logger.info(f"IIFL API connection status: {api_connected}")
+                auth_result = await iifl.authenticate()
+                
+                # Check authentication result
+                if auth_result and not isinstance(auth_result, dict) or (isinstance(auth_result, dict) and auth_result.get("access_token")):
+                    status["iifl_api_connected"] = True
+                    logger.info("IIFL API connection status: True")
+                else:
+                    status["iifl_api_connected"] = False
+                    if isinstance(auth_result, dict):
+                        if auth_result.get("auth_code_expired"):
+                            status["iifl_api_error"] = "Auth code expired"
+                        elif auth_result.get("error"):
+                            status["iifl_api_error"] = auth_result["error"]
+                        else:
+                            status["iifl_api_error"] = "Authentication failed"
+                    else:
+                        status["iifl_api_error"] = "Authentication failed"
+                    logger.warning(f"IIFL API connection failed: {status['iifl_api_error']}")
         except Exception as e:
             status["iifl_api_connected"] = False
             status["iifl_api_error"] = str(e)

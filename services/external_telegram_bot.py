@@ -93,7 +93,8 @@ class ExternalTelegramBotService:
     async def run_forever(self):
         """Run the service until interrupted"""
         if not await self.start():
-            return
+            logger.error("🛑 Telegram bot service failed to start - exiting")
+            sys.exit(1)
         
         try:
             # Keep running until interrupted

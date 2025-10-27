@@ -49,7 +49,7 @@ class ComprehensiveBacktestAnalyzer:
             return symbols[:40]
             
         except Exception as e:
-            logger.error(f"Error reading NIFTY symbols: {e}")
+            print(f"Error reading NIFTY symbols: {e}")
             # Extended fallback list
             return [
                 'RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK', 'SBIN', 
@@ -159,7 +159,7 @@ class ComprehensiveBacktestAnalyzer:
             }
             
         except Exception as e:
-            logger.error(f"Error calculating indicators: {e}")
+            print(f"Error calculating indicators: {e}")
             return {}
 
     def analyze_short_term_signals(self, indicators: Dict[str, float], symbol: str) -> List[Dict]:
@@ -444,7 +444,7 @@ class ComprehensiveBacktestAnalyzer:
                 results['summary']['total_signals'] += len(all_signals)
                 
             except Exception as e:
-                logger.error(f"Error processing {symbol}: {e}")
+                print(f"Error processing {symbol}: {e}")
                 continue
         
         # Calculate performance metrics
@@ -681,7 +681,7 @@ async def main():
         print(f"{'='*80}")
         
     except Exception as e:
-        logger.error(f"Error in main execution: {e}")
+        print(f"Error in main execution: {e}")
         import traceback
         traceback.print_exc()
 
