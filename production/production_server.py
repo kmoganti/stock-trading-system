@@ -15,8 +15,10 @@ from pathlib import Path
 import uvicorn
 from contextlib import asynccontextmanager
 
-# Add project directory to Python path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Ensure project root is on sys.path so `config`, `api`, etc. are importable
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 # Configure logging for startup
 logging.basicConfig(
