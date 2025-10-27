@@ -36,22 +36,17 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 async def init_db():
-    """Initialize database tables (optimized for fast startup)"""
-    # Skip heavy initialization if database already exists and is populated
-    import os
-    db_file = "trading_system.db"
-    if os.path.exists(db_file) and os.path.getsize(db_file) > 1000:
-        # Database exists and appears to be populated, skip heavy checks
-        return
-    
+    """Initialize or migrate database tables (lightweight and idempotent)."""
     async with engine.begin() as conn:
+        # Always ensure all declared models are created (checkfirst prevents heavy work)
         await conn.run_sync(Base.metadata.create_all)
-        # Only run column checks on first-time setup or small databases
+
+        # Lightweight column backfills for legacy installs (SQLite only)
         try:
             if engine.url.get_backend_name().startswith("sqlite"):
-                # Inspect existing columns
+                # Watchlist legacy columns
                 result = await conn.execute(text("PRAGMA table_info('watchlist')"))
-                columns = {row[1] for row in result.fetchall()}  # row[1] is column name
+                columns = {row[1] for row in result.fetchall()}
                 if "category" not in columns:
                     await conn.execute(text("ALTER TABLE watchlist ADD COLUMN category VARCHAR(20) NOT NULL DEFAULT 'short_term'"))
                 if "is_active" not in columns:

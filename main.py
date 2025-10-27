@@ -95,6 +95,14 @@ async def lifespan(app: FastAPI):
     # Startup
     log_timing("Starting lifespan - application startup")
     logger.info("Starting Stock Trading System...")
+    # Ensure database schema is up-to-date (idempotent)
+    try:
+        from models.database import init_db as _ensure_db
+        await _ensure_db()
+        log_timing("Database initialized/migrated")
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e}")
+        log_timing(f"Database init failed: {e}")
     
     log_timing("Logging system events")
     trading_logger.log_system_event("application_startup", {"version": "1.0.0"})
