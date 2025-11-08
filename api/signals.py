@@ -1,7 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Security
 from sqlalchemy.ext.asyncio import AsyncSession 
 from typing import Dict, Any, List, Optional, Literal
+import asyncio
 import logging
+import os
+from datetime import datetime
 from pydantic import BaseModel, Field, field_validator, model_validator
 from models.database import get_db
 from models.signals import Signal, SignalStatus
@@ -13,9 +16,16 @@ from services.strategy import StrategyService
 from services.watchlist import WatchlistService
 from services.signal_validator import get_signal_validator, ValidationResult
 from .auth import get_api_key
+from sqlalchemy import select, update
+from services import progress as progress_service
+from starlette.responses import StreamingResponse
 
 router = APIRouter(prefix="/api/signals", tags=["signals"])
 logger = logging.getLogger(__name__)
+
+# Test mode - bypass IIFL calls
+TEST_MODE = os.getenv("TEST_MODE", "false").lower() == "true"
+logger.info(f"🧪 Signals API initialized with TEST_MODE={TEST_MODE} (env={os.getenv('TEST_MODE', 'not set')})")
 
 async def get_order_manager(db: AsyncSession = Depends(get_db)) -> OrderManager:
     """Dependency to get OrderManager instance"""
@@ -82,26 +92,87 @@ async def create_signal(
 async def get_signals(
     status: Optional[str] = Query(None, description="Filter by status: pending, approved, rejected, executed, expired, failed"),
     limit: int = Query(50, ge=1, le=200),
-    order_manager: OrderManager = Depends(get_order_manager)
+    db: AsyncSession = Depends(get_db)
 ) -> List[Dict[str, Any]]:
-    """Get signals with optional status filter"""
+    """Get signals with optional status filter - reads directly from database"""
     logger.info(f"Request for signals with status='{status}' and limit={limit}")
+    
     try:
-        if status == "pending":
-            signals = await order_manager.get_pending_signals(limit)
-        else:
-            signals = await order_manager.get_recent_signals(limit)
-            
-            # Filter by status if provided
-            if status:
-                signals = [s for s in signals if s.get('status') == status]
+        # In SAFE_MODE, avoid touching the database entirely to prevent hangs
+        if os.getenv("SAFE_MODE", "false").lower() == "true":
+            logger.warning("SAFE_MODE=true - returning empty signals list without DB access")
+            return []
+
+        from models.signals import Signal, SignalStatus
+        from sqlalchemy import select
         
-        logger.info(f"Found {len(signals)} signals.")
-        return signals
+        # Build query
+        query = select(Signal).order_by(Signal.created_at.desc()).limit(limit)
+        
+        # Filter by status if provided
+        if status:
+            try:
+                status_enum = SignalStatus(status.lower())
+                query = query.where(Signal.status == status_enum)
+            except ValueError:
+                logger.warning(f"Invalid status value: {status}")
+        
+        # Execute query with a strict timeout to avoid blocking the event loop
+        try:
+            result = await asyncio.wait_for(db.execute(query), timeout=1.5)
+        except asyncio.TimeoutError:
+            logger.warning("Timeout while fetching signals from DB - returning empty list")
+            return []
+        signals = result.scalars().all()
+        
+        # Convert to dict
+        signals_dict = [sig.to_dict() for sig in signals]
+        
+        logger.info(f"Found {len(signals_dict)} signals.")
+        return signals_dict
         
     except Exception as e:
         logger.error(f"Error getting signals: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        # On DB errors, fail safe with empty list to keep UI responsive
+        return []
+
+@router.get("/progress")
+async def get_generation_progress() -> Dict[str, Any]:
+    """Return current server-side signal generation progress state."""
+    try:
+        return await progress_service.get_state()
+    except Exception as e:
+        logger.error(f"Error getting progress state: {str(e)}", exc_info=True)
+        # Return a safe default state
+        return {
+            "in_progress": False,
+            "task": None,
+            "phase": None,
+            "current_symbol": None,
+            "processed": 0,
+            "total": 0,
+            "percentage": 0,
+            "started_at": None,
+            "last_update": None,
+        }
+
+@router.get("/progress/stream")
+async def stream_generation_progress():
+    """Server-Sent Events stream that pushes progress updates periodically."""
+    async def event_generator():
+        try:
+            while True:
+                state = await progress_service.get_state()
+                import json
+                payload = f"data: {json.dumps(state)}\n\n"
+                yield payload
+                # Yield periodically; keep interval short for responsiveness
+                await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            # Client disconnected
+            return
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 @router.post("/generate/intraday")
 async def generate_intraday_signals(
@@ -109,11 +180,17 @@ async def generate_intraday_signals(
     persist: bool = False,
     persisted: Optional[bool] = None,  # alias for persist (backward compatibility with clients)
     queue_for_approval: bool = True,
+    use_batch: bool = True,  # new: prefer batched data fetch to avoid long blocking
+    validate: bool = True,   # new: allow skipping validation to speed up
+    max_concurrency: int = 4,  # new: limit concurrent processing
+    interval: Optional[str] = None,  # new: override interval
+    days: Optional[int] = None,      # new: override days window
     db: AsyncSession = Depends(get_db),
     order_manager: OrderManager = Depends(get_order_manager)
 ) -> Dict[str, Any]:
     """Generate intraday signals for all symbols in the given watchlist category.
 
+    Optimized to batch-fetch historical data and process symbols concurrently to prevent request hangs.
     If persist is True, signals are saved as pending for approval (dry-run friendly).
     """
     try:
@@ -124,41 +201,128 @@ async def generate_intraday_signals(
         iifl = IIFLAPIService()
         data_fetcher = DataFetcher(iifl, db_session=db)
         strategy = StrategyService(data_fetcher, db)
+
+        # Load symbols from watchlist for the category
         symbols = await strategy.get_watchlist(category=category)
+        await progress_service.start(task="intraday", total=len(symbols), phase="initializing")
+
+        if not symbols:
+            await progress_service.finish()
+            return {"count": 0, "signals": [], "persisted_ids": []}
+
+        # Decide interval/days similar to StrategyService defaults
+        eff_interval = interval or ("5m" if category == "day_trading" else "1D")
+        eff_days = (
+            days if days is not None else (2 if category == "day_trading" else (250 if category == "long_term" else 100))
+        )
+
         generated: List[Dict[str, Any]] = []
-        persisted: List[int] = []
-        for symbol in symbols:
-            sigs = await strategy.generate_signals(symbol)
-            for ts in sigs:
-                sig_dict = {
-                    "symbol": ts.symbol,
-                    "signal_type": ts.signal_type.value,
-                    "entry_price": ts.entry_price,
-                    "stop_loss": ts.stop_loss,
-                    "target_price": ts.target_price,
-                    "confidence": ts.confidence,
-                    "strategy": ts.strategy,
-                    "metadata": ts.metadata or {}
-                }
-                generated.append(sig_dict)
-                if persist:
-                    created = await order_manager.create_signal({
+        persisted_ids: List[int] = []
+
+        if use_batch:
+            # Batch historical fetch to minimize network overhead and avoid sequential blocking
+            await progress_service.update(phase="fetching")
+            hist_map = await data_fetcher.get_historical_data_many(
+                symbols, interval=eff_interval, days=eff_days, max_concurrency=max_concurrency
+            )
+
+            # Process signals concurrently with a semaphore
+            await progress_service.update(phase="scanning")
+            sem = asyncio.Semaphore(max_concurrency)
+            lock = asyncio.Lock()  # protect shared lists
+
+            async def process_symbol(sym: str, data):
+                async with sem:
+                    try:
+                        sigs = await strategy.generate_signals_from_data(sym, data, strategy_name=None, validate=validate)
+                        if not sigs:
+                            return
+                        # Convert and optionally persist
+                        to_add: List[Dict[str, Any]] = []
+                        for ts in sigs:
+                            sig_dict = {
+                                "symbol": ts.symbol,
+                                "signal_type": ts.signal_type.value,
+                                "entry_price": ts.entry_price,
+                                "stop_loss": ts.stop_loss,
+                                "target_price": ts.target_price,
+                                "confidence": ts.confidence,
+                                "strategy": ts.strategy,
+                                "metadata": ts.metadata or {},
+                            }
+                            to_add.append(sig_dict)
+                        async with lock:
+                            generated.extend(to_add)
+                        if persist:
+                            for ts in sigs:
+                                created = await order_manager.create_signal({
+                                    "symbol": ts.symbol,
+                                    "signal_type": ts.signal_type,
+                                    "entry_price": ts.entry_price,
+                                    "stop_loss": ts.stop_loss,
+                                    "take_profit": ts.target_price,
+                                    "reason": f"{ts.strategy} generated",
+                                    "strategy": ts.strategy,
+                                    "confidence": ts.confidence,
+                                })
+                                if created:
+                                    if queue_for_approval:
+                                        await order_manager.process_signal(created)
+                                    async with lock:
+                                        persisted_ids.append(created.id)
+                    finally:
+                        # Update progress per symbol processed
+                        try:
+                            idx = (len(generated) or 0)
+                            await progress_service.update(current_symbol=sym, processed=idx)
+                        except Exception:
+                            pass
+
+            tasks: List[Any] = []
+            for sym, data in hist_map.items():
+                tasks.append(process_symbol(sym, data))
+            if tasks:
+                await asyncio.gather(*tasks)
+        else:
+            # Fallback to original sequential flow (not recommended for large lists)
+            await progress_service.update(phase="scanning")
+            for idx, symbol in enumerate(symbols, start=1):
+                await progress_service.update(current_symbol=symbol, processed=idx)
+                sigs = await strategy.generate_signals(symbol)
+                await asyncio.sleep(0)
+                for ts in sigs:
+                    sig_dict = {
                         "symbol": ts.symbol,
-                        "signal_type": ts.signal_type,
+                        "signal_type": ts.signal_type.value,
                         "entry_price": ts.entry_price,
                         "stop_loss": ts.stop_loss,
-                        "take_profit": ts.target_price,
-                        "reason": f"{ts.strategy} generated",
-                        "strategy": ts.strategy,
+                        "target_price": ts.target_price,
                         "confidence": ts.confidence,
-                    })
-                    if created:
-                        persisted.append(created.id)
-                        if queue_for_approval:
-                            await order_manager.process_signal(created)
-        return {"count": len(generated), "signals": generated, "persisted_ids": persisted}
+                        "strategy": ts.strategy,
+                        "metadata": ts.metadata or {},
+                    }
+                    generated.append(sig_dict)
+                    if persist:
+                        created = await order_manager.create_signal({
+                            "symbol": ts.symbol,
+                            "signal_type": ts.signal_type,
+                            "entry_price": ts.entry_price,
+                            "stop_loss": ts.stop_loss,
+                            "take_profit": ts.target_price,
+                            "reason": f"{ts.strategy} generated",
+                            "strategy": ts.strategy,
+                            "confidence": ts.confidence,
+                        })
+                        if created:
+                            persisted_ids.append(created.id)
+                            if queue_for_approval:
+                                await order_manager.process_signal(created)
+
+        await progress_service.finish()
+        return {"count": len(generated), "signals": generated, "persisted_ids": persisted_ids}
     except Exception as e:
         logger.error(f"Error generating intraday signals: {str(e)}", exc_info=True)
+        await progress_service.clear()
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/generate/live")
@@ -205,6 +369,9 @@ async def generate_live_signals(
                 "BAJAJ-AUTO", "M&M", "EICHERMOT", "BOSCHLTD", "HAVELLS", "SIEMENS", "ABB"
             ]
         
+        # Initialize progress
+        await progress_service.start(task="live", total=len(symbols), phase="scanning")
+
         # Run the live scan
         results = await scanner.scan_watchlist(symbols)
         
@@ -243,6 +410,7 @@ async def generate_live_signals(
                         if queue_for_approval:
                             await order_manager.process_signal(created)
         
+        await progress_service.finish()
         return {
             "count": len(generated_signals),
             "signals": generated_signals,
@@ -253,6 +421,7 @@ async def generate_live_signals(
         
     except Exception as e:
         logger.error(f"Error generating live signals: {str(e)}", exc_info=True)
+        await progress_service.clear()
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/generate/historic")
@@ -291,8 +460,13 @@ async def generate_historic_signals(
         generated: List[Dict[str, Any]] = []
         persisted: List[int] = []
 
-        for sym in symbol_list:
+        await progress_service.start(task="historic", total=len(symbol_list), phase="scanning")
+
+        for idx, sym in enumerate(symbol_list, start=1):
+            await progress_service.update(current_symbol=sym, processed=idx)
             sigs = await strategy.generate_signals(sym)
+            # yield control to keep loop responsive
+            await asyncio.sleep(0)
             # Fallback to mock if nothing generated
             if not sigs:
                 mock_sigs = await strategy._generate_mock_signals(sym)  # noqa: SLF001
@@ -328,28 +502,63 @@ async def generate_historic_signals(
                         if queue_for_approval:
                             await order_manager.process_signal(created)
 
+        await progress_service.finish()
         return {"count": len(generated), "signals": generated, "persisted_ids": persisted}
 
     except Exception as e:
         logger.error(f"Error generating historic signals: {str(e)}", exc_info=True)
+        await progress_service.clear()
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/{signal_id}/approve")
 async def approve_signal(
     signal_id: int,
     api_key: str = Security(get_api_key),
-    order_manager: OrderManager = Depends(get_order_manager)
+    db: AsyncSession = Depends(get_db)
 ) -> Dict[str, Any]:
     """Approve a pending signal"""
-    logger.info(f"Request to approve signal {signal_id}")
+    logger.info(f"Request to approve signal {signal_id} (TEST_MODE={TEST_MODE})")
+    
     try:
-        result = await order_manager.approve_signal(signal_id)
+        if TEST_MODE:
+            # Test mode: Update signal directly without calling IIFL
+            logger.info(f"TEST_MODE: Approving signal {signal_id} without IIFL calls")
+            
+            stmt = update(Signal).where(Signal.id == signal_id).values(
+                status=SignalStatus.APPROVED,
+                approved_at=datetime.now()
+            )
+            await db.execute(stmt)
+            await db.commit()
+            
+            # Fetch updated signal
+            result = await db.execute(select(Signal).where(Signal.id == signal_id))
+            signal = result.scalar_one_or_none()
+            
+            if not signal:
+                raise HTTPException(status_code=404, detail="Signal not found")
+            
+            return {
+                "success": True,
+                "message": f"Signal {signal_id} approved (TEST MODE)",
+                "signal": signal.to_dict()
+            }
+        
+        # Production mode: Use order_manager with timeout
+        order_manager = await get_order_manager(db)
+        result = await asyncio.wait_for(
+            order_manager.approve_signal(signal_id),
+            timeout=8.0
+        )
         
         if not result["success"]:
             raise HTTPException(status_code=400, detail=result["message"])
         
         return result
         
+    except asyncio.TimeoutError:
+        logger.warning(f"Timeout approving signal {signal_id}")
+        raise HTTPException(status_code=504, detail="Signal approval timed out - signal may still be processing")
     except HTTPException:
         raise
     except Exception as e:
@@ -361,18 +570,51 @@ async def reject_signal(
     signal_id: int,
     reason: str = "Manual rejection",
     api_key: str = Security(get_api_key),
-    order_manager: OrderManager = Depends(get_order_manager)
+    db: AsyncSession = Depends(get_db)
 ) -> Dict[str, Any]:
     """Reject a pending signal"""
-    logger.info(f"Request to reject signal {signal_id} with reason: {reason}")
+    logger.info(f"Request to reject signal {signal_id} with reason: {reason} (TEST_MODE={TEST_MODE})")
+    
     try:
-        result = await order_manager.reject_signal(signal_id, reason)
+        if TEST_MODE:
+            # Test mode: Update signal directly without calling IIFL
+            logger.info(f"TEST_MODE: Rejecting signal {signal_id} without IIFL calls")
+            
+            stmt = update(Signal).where(Signal.id == signal_id).values(
+                status=SignalStatus.REJECTED,
+                extras={"rejection_reason": reason, "rejected_at": datetime.now().isoformat()}
+            )
+            await db.execute(stmt)
+            await db.commit()
+            
+            # Fetch updated signal
+            result = await db.execute(select(Signal).where(Signal.id == signal_id))
+            signal = result.scalar_one_or_none()
+            
+            if not signal:
+                raise HTTPException(status_code=404, detail="Signal not found")
+            
+            return {
+                "success": True,
+                "message": f"Signal {signal_id} rejected (TEST MODE): {reason}",
+                "signal": signal.to_dict()
+            }
+        
+        # Production mode: Use order_manager with timeout
+        order_manager = await get_order_manager(db)
+        result = await asyncio.wait_for(
+            order_manager.reject_signal(signal_id, reason),
+            timeout=8.0
+        )
         
         if not result["success"]:
             raise HTTPException(status_code=400, detail=result["message"])
         
         return result
         
+    except asyncio.TimeoutError:
+        logger.warning(f"Timeout rejecting signal {signal_id}")
+        raise HTTPException(status_code=504, detail="Signal rejection timed out - signal may still be processing")
     except HTTPException:
         raise
     except Exception as e:

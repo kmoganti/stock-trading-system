@@ -784,10 +784,42 @@ class DataFetcher:
         
         for holding in holdings_raw:
             try:
-                symbol = holding.get("nseTradingSymbol", "").replace("-EQ", "")
-                quantity = holding.get("totalQuantity", 0)
-                avg_price = holding.get("averageTradedPrice", 0)
-                ltp = holding.get("previousDayClose", 0)  # Using previous close as current price
+                # Prefer NSE trading symbol variants; fall back to generic symbol/tradingSymbol
+                symbol_raw = (
+                    holding.get("nseTradingSymbol")
+                    or holding.get("tradingSymbol")
+                    or holding.get("symbol")
+                    or holding.get("nseSymbol")
+                    or ""
+                )
+                symbol = str(symbol_raw).replace("-EQ", "") if symbol_raw else ""
+
+                # Quantity variants
+                quantity = (
+                    holding.get("totalQuantity")
+                    or holding.get("quantity")
+                    or holding.get("netQuantity")
+                    or holding.get("totalQty")
+                    or 0
+                )
+
+                # Average price variants
+                avg_price = (
+                    holding.get("averageTradedPrice")
+                    or holding.get("avgPrice")
+                    or holding.get("averagePrice")
+                    or 0
+                )
+
+                # LTP/price variants; fallback to previous close if live not present
+                ltp = (
+                    holding.get("ltp")
+                    or holding.get("LastTradedPrice")
+                    or holding.get("lastPrice")
+                    or holding.get("currentPrice")
+                    or holding.get("previousDayClose")
+                    or 0
+                )
                 
                 if quantity > 0 and avg_price > 0:
                     current_value = quantity * ltp
@@ -797,7 +829,10 @@ class DataFetcher:
                     
                     processed_holdings.append({
                         "symbol": symbol,
-                        "company_name": holding.get("formattedInstrumentName", ""),
+                        "company_name": holding.get("formattedInstrumentName")
+                            or holding.get("companyName")
+                            or holding.get("name")
+                            or "",
                         "isin": holding.get("isin", ""),
                         "quantity": quantity,
                         "avg_price": avg_price,
@@ -852,6 +887,31 @@ class DataFetcher:
     async def get_portfolio_data(self, force_refresh: bool = False) -> Dict[str, Any]:
         """Get complete portfolio data (holdings + positions)"""
         try:
+            # If force, clear in-memory and Redis caches before fetching
+            if force_refresh:
+                try:
+                    self._portfolio_cache = None
+                    self._margin_cache = None
+                    self._portfolio_cache_date = None
+                    self._margin_cache_date = None
+                    # Best-effort Redis cache clear
+                    try:
+                        from services.redis_service import get_redis_service, CacheKeys  # type: ignore
+                        redis = await get_redis_service()
+                        if redis:
+                            try:
+                                await redis.delete(CacheKeys.API_HOLDINGS)
+                            except Exception:
+                                pass
+                            try:
+                                await redis.delete(CacheKeys.API_POSITIONS)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
             # Serve from cache if already refreshed today and not forced to refresh
             today = datetime.now().date()
             if (not force_refresh and
@@ -889,6 +949,16 @@ class DataFetcher:
                 raw_holdings = raw_list or []
                 processed_holdings = self._process_holdings_data(raw_holdings)
                 portfolio_data["holdings"] = processed_holdings
+
+                # If provider returned items but processing yielded none, log a compact diagnostic
+                try:
+                    if raw_holdings and not processed_holdings:
+                        preview_keys = list(raw_holdings[0].keys()) if isinstance(raw_holdings[0], dict) else type(raw_holdings[0]).__name__
+                        logger.warning(
+                            f"Holdings processing produced 0 items but provider returned {len(raw_holdings)}; first item keys: {preview_keys}"
+                        )
+                except Exception:
+                    pass
                 
                 # Calculate totals from holdings
                 for holding in processed_holdings:
