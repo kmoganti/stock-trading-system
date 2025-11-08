@@ -56,6 +56,10 @@ server.log
 main_server.log
 *.db
 
+# Local env backups and runtime PIDs
+.env.backup.*
+.trading_system.pid
+
 # Data caches
 data/hist_cache/
 *.parquet
