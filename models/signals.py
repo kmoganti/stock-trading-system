@@ -2,7 +2,7 @@ from sqlalchemy import Column, Integer, String, Float, DateTime, Text, JSON, Enu
 from sqlalchemy.sql import func
 from .database import Base
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
 class SignalType(str, enum.Enum):
@@ -43,6 +43,23 @@ class Signal(Base):
     def __repr__(self):
         return f"<Signal(id={self.id}, symbol={self.symbol}, type={self.signal_type}, status={self.status})>"
     
+    @staticmethod
+    def _iso_utc(dt: Optional[datetime]) -> Optional[str]:
+        """Serialize datetimes as ISO8601 in UTC with Z suffix.
+
+        Assumes naive datetimes are in UTC (server default)."""
+        if not dt:
+            return None
+        # If naive, assume UTC; else convert to UTC
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        else:
+            dt = dt.astimezone(timezone.utc)
+        # Use isoformat and ensure Z suffix
+        iso = dt.isoformat()
+        # Python may render +00:00; normalize to Z for client parsing
+        return iso.replace("+00:00", "Z")
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
@@ -53,10 +70,10 @@ class Signal(Base):
             "take_profit": self.take_profit,
             "margin_required": self.margin_required,
             "status": self.status.value,
-            "expiry_time": self.expiry_time.isoformat() if self.expiry_time else None,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "approved_at": self.approved_at.isoformat() if self.approved_at else None,
-            "executed_at": self.executed_at.isoformat() if self.executed_at else None,
+            "expiry_time": self._iso_utc(self.expiry_time),
+            "created_at": self._iso_utc(self.created_at),
+            "approved_at": self._iso_utc(self.approved_at),
+            "executed_at": self._iso_utc(self.executed_at),
             "extras": self.extras,
             "order_id": self.order_id,
             "quantity": self.quantity,

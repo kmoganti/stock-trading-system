@@ -12,6 +12,14 @@ from services.logging_service import trading_logger
 
 logger = logging.getLogger(__name__)
 
+# Import Redis service for caching
+try:
+    from services.redis_service import get_redis_service, CacheKeys, CacheTTL
+    REDIS_AVAILABLE = True
+except ImportError:
+    REDIS_AVAILABLE = False
+    logger.warning("Redis service not available, caching disabled")
+
 # --- Global Token Cache ---
 # This simple dictionary acts as a process-level cache for the session token.
 # It survives re-instantiation of the IIFLAPIService during hot-reloads.
@@ -35,6 +43,29 @@ class IIFLAPIService:
         if not self._initialized: # type: ignore
             # Lazy-load settings with fallback to env to avoid hard dependency on pydantic
             self._load_settings()
+            # Respect SAFE_MODE to avoid any external calls that could block/hang
+            try:
+                # Prefer config.settings if it exposes a SAFE_MODE flag; else read env
+                safe_mode_env = os.getenv("SAFE_MODE", "false").lower() == "true"
+                raw_settings_val = getattr(self.settings, "safe_mode", safe_mode_env)
+                if isinstance(raw_settings_val, str):
+                    settings_safe = raw_settings_val.strip().lower() == "true"
+                else:
+                    settings_safe = bool(raw_settings_val)
+                # Enable SAFE_MODE only if either explicitly set true in settings or env
+                self.safe_mode: bool = bool(settings_safe or safe_mode_env)
+            except Exception:
+                self.safe_mode = os.getenv("SAFE_MODE", "false").lower() == "true"
+            # Logging controls to avoid event-loop blocking due to excessive I/O
+            try:
+                self.debug_http_logging: bool = os.getenv("IIFL_HTTP_DEBUG", "false").lower() == "true"
+            except Exception:
+                self.debug_http_logging = False
+            try:
+                # When true, suppress trading_logger writes (system events, api calls, errors)
+                self.disable_trading_logger: bool = os.getenv("DISABLE_TRADING_LOGGER", "true").lower() == "true"
+            except Exception:
+                self.disable_trading_logger = True
             # Track auth code expiry for UI; IIFL auth codes are day-bound
             self.auth_code_expiry: Optional[datetime] = None
             self.http_client: Optional[httpx.AsyncClient] = None
@@ -55,6 +86,9 @@ class IIFLAPIService:
                 self._initialize_auth_expiry()
             except Exception as e:
                 logger.debug(f"Could not initialize auth expiry on init: {e}")
+            # Auth failure tracking for circuit breaker
+            self._auth_failure_count: int = 0
+            self._auth_circuit_open_until: Optional[float] = None
             self._initialized = True
 
     def _load_settings(self) -> None:
@@ -108,9 +142,13 @@ class IIFLAPIService:
             if os.path.exists(self.token_cache_file):
                 with open(self.token_cache_file, 'r') as f:
                     token = f.read().strip()
-                    if token:
+                    # Ignore empty or mock tokens in cache to avoid sticky mock sessions
+                    if token and not str(token).startswith("mock_"):
                         logger.info("Loaded session token from cache file.")
                         return token
+                    else:
+                        # If mock or empty found, treat as cache miss
+                        return None
         except Exception as e:
             logger.warning(f"Could not load token from cache: {e}")
         return None
@@ -124,9 +162,11 @@ class IIFLAPIService:
             logger.error(f"Could not save token to cache: {e}")
     
     async def get_http_client(self) -> httpx.AsyncClient:
-        """Get or create an httpx.AsyncClient instance."""
+        """Get or create an httpx.AsyncClient instance with timeout."""
         if self.http_client is None or self.http_client.is_closed:
-            self.http_client = httpx.AsyncClient()
+            # Add 10 second timeout to prevent hanging
+            timeout = httpx.Timeout(10.0, connect=5.0)
+            self.http_client = httpx.AsyncClient(timeout=timeout)
         return self.http_client
 
     async def close_http_client(self):
@@ -197,6 +237,10 @@ class IIFLAPIService:
     
     async def get_user_session(self, auth_code: str) -> Dict:
         """Request a new user session from the IIFL API using checksum authentication."""
+        # In SAFE_MODE, never hit the network; return a mock token immediately
+        if getattr(self, "safe_mode", False):
+            return {"status": "Ok", "userSession": f"mock_token_{int(time.time())}"}
+
         start_time = time.time()
         
         # Construct the checksum required by the API
@@ -211,49 +255,64 @@ class IIFLAPIService:
             "checkSum": checksum
         }
         
-        # Enhanced logging for IIFL API calls
-        logger.info(f"IIFL API Request: POST {url}")
-        logger.info(f"Request Headers: {json.dumps(headers)}")
-        logger.info(f"Request Body: {json.dumps(payload)}")
+        # Enhanced logging for IIFL API calls (guarded)
+        if self.debug_http_logging:
+            logger.info(f"IIFL API Request: POST {url}")
+            try:
+                logger.info(f"Request Headers: {json.dumps(headers)}")
+                logger.info(f"Request Body: {json.dumps(payload)}")
+            except Exception:
+                pass
         
         # Log to specialized API logger
-        trading_logger.log_system_event("iifl_api_request", {
-            "method": "POST",
-            "url": url,
-            "endpoint": self.get_user_session_endpoint,
-            "payload_keys": list(payload.keys())
-        })
+        if not getattr(self, "disable_trading_logger", False):
+            trading_logger.log_system_event("iifl_api_request", {
+                "method": "POST",
+                "url": url,
+                "endpoint": self.get_user_session_endpoint,
+                "payload_keys": list(payload.keys())
+            })
         
         try:
             client = await self.get_http_client()
             # Make HTTP request without additional timeout wrapper
-            response = await client.post(url, headers=headers, data=json.dumps(payload))
+            # Guard the call with a shorter overall timeout to avoid blocking the event loop too long
+            response = await asyncio.wait_for(
+                client.post(url, headers=headers, data=json.dumps(payload)), timeout=6.0
+            )
             response_time = time.time() - start_time
             
-            # Enhanced response logging
-            logger.info(f"IIFL API Response: {response.status_code} in {response_time:.3f}s")
-            logger.info(f"Response Headers: {json.dumps(dict(response.headers))}")
-            logger.info(f"Response Body: {response.text}")
+            # Enhanced response logging (guarded)
+            if self.debug_http_logging:
+                logger.info(f"IIFL API Response: {response.status_code} in {response_time:.3f}s")
+                try:
+                    logger.info(f"Response Headers: {json.dumps(dict(response.headers))}")
+                    # Cap response body logged to avoid huge I/O
+                    logger.info(f"Response Body: {response.text[:2000]}")
+                except Exception:
+                    pass
             
             # Log API call details
-            trading_logger.log_api_call(
-                endpoint=url,
-                method="POST",
-                status_code=response.status_code,
-                response_time=response_time,
-                error=None if response.status_code == 200 else f"HTTP {response.status_code}"
-            )
+            if not getattr(self, "disable_trading_logger", False):
+                trading_logger.log_api_call(
+                    endpoint=url,
+                    method="POST",
+                    status_code=response.status_code,
+                    response_time=response_time,
+                    error=None if response.status_code == 200 else f"HTTP {response.status_code}"
+                )
             
             response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
             response_data = response.json()
             
             # Log successful response
-            trading_logger.log_system_event("iifl_api_response", {
-                "url": url,
-                "status_code": response.status_code,
-                "response_time_ms": response_time * 1000,
-                "response_keys": list(response_data.keys()) if isinstance(response_data, dict) else "non_dict"
-            })
+            if not getattr(self, "disable_trading_logger", False):
+                trading_logger.log_system_event("iifl_api_response", {
+                    "url": url,
+                    "status_code": response.status_code,
+                    "response_time_ms": response_time * 1000,
+                    "response_keys": list(response_data.keys()) if isinstance(response_data, dict) else "non_dict"
+                })
             
             return response_data
             
@@ -264,27 +323,52 @@ class IIFLAPIService:
             logger.error(error_msg)
             
             # Log API error
-            trading_logger.log_api_call(
-                endpoint=url,
-                method="POST",
-                status_code=0,
-                response_time=response_time,
-                error=str(e)
-            )
-            
-            trading_logger.log_error("iifl_api", e, {
-                "url": url,
-                "method": "POST",
-                "response_time": response_time
-            })
+            if not getattr(self, "disable_trading_logger", False):
+                trading_logger.log_api_call(
+                    endpoint=url,
+                    method="POST",
+                    status_code=0,
+                    response_time=response_time,
+                    error=str(e)
+                )
+                trading_logger.log_error("iifl_api", e, {
+                    "url": url,
+                    "method": "POST",
+                    "response_time": response_time
+                })
             
             return {"error": f"Network error: {str(e)}"}
+        except asyncio.TimeoutError as e:
+            response_time = time.time() - start_time
+            logger.error(f"Timeout obtaining user session: {e}")
+            if not getattr(self, "disable_trading_logger", False):
+                trading_logger.log_api_call(
+                    endpoint=url,
+                    method="POST",
+                    status_code=0,
+                    response_time=response_time,
+                    error="Timeout while requesting user session"
+                )
+            return {"error": "Timeout while requesting user session"}
     
     async def authenticate(self, client_id: Optional[str] = None, auth_code: Optional[str] = None, app_secret: Optional[str] = None) -> dict:
         """Authenticate with IIFL API, protected by a lock to prevent race conditions."""
         async with _auth_lock:
+            # Absolute fast-path in SAFE_MODE: never hit network, return mock token
+            if getattr(self, "safe_mode", False):
+                if not self.session_token or not str(self.session_token).startswith("mock_"):
+                    self.session_token = f"mock_token_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                    self.token_expiry = None
+                return {"access_token": self.session_token, "expires_in": 3600, "safe_mode": True}
+            # Circuit breaker: if recently failing, back off to keep app responsive
+            now = time.monotonic()
+            if self._auth_circuit_open_until and now < self._auth_circuit_open_until:
+                cooldown = max(0.0, self._auth_circuit_open_until - now)
+                logger.warning(f"IIFL auth circuit open, skipping auth for {cooldown:.0f}s")
+                return {"error": "Auth temporarily disabled (cooldown)", "cooldown_seconds": int(cooldown)}
             # Double-check if a token was acquired while waiting for the lock
-            if self.session_token:
+            # Never treat a mock token as valid when ENVIRONMENT=production
+            if self.session_token and not str(self.session_token).startswith("mock_"):
                 return {"access_token": self.session_token, "expires_in": 3600}
 
             # Allow overrides for tests
@@ -315,7 +399,9 @@ class IIFLAPIService:
                 if response_data:
                     logger.info(f"Authentication response received: {json.dumps(response_data)}")
                     
-                    if response_data.get("stat") == "Ok" or response_data.get("status") == "Ok":
+                    # Normalize status fields from provider
+                    status_val = str(response_data.get("status") or response_data.get("stat") or "").strip().lower()
+                    if status_val == "ok":
                         session_token = (response_data.get("SessionToken") or 
                                        response_data.get("sessionToken") or 
                                        response_data.get("session_token") or
@@ -326,6 +412,9 @@ class IIFLAPIService:
                             self.session_token = session_token
                             self._save_token_to_cache(session_token)
                             self.token_expiry = None
+                            # Reset circuit breaker on success
+                            self._auth_failure_count = 0
+                            self._auth_circuit_open_until = None
                             logger.info(f"IIFL authentication successful. Token: {session_token[:10]}...")
                             trading_logger.log_system_event("iifl_auth_success", {"token_preview": session_token[:10] + "..."})
                             return {"access_token": session_token, "expires_in": 3600}
@@ -343,31 +432,54 @@ class IIFLAPIService:
                 
                 # Check if auth code appears to be expired (common error patterns)
                 if response_data and isinstance(response_data, dict):
-                    error_msg = response_data.get("emsg") or response_data.get("message", "")
-                    if any(keyword in error_msg.lower() for keyword in ["expired", "invalid", "unauthorized", "forbidden", "not_ok"]):
+                    error_msg = (response_data.get("emsg") or response_data.get("message", "")).lower()
+                    if any(keyword in error_msg for keyword in ["expired", "invalid", "unauthorized", "forbidden", "not_ok", "checksum"]):
                         logger.error(f"🚨 AUTH CODE EXPIRED OR INVALID: {error_msg}")
                         logger.error("💡 Please update your IIFL_AUTH_CODE in the .env file")
+                        # Bump failure count and open circuit briefly to avoid tight loops
+                        self._auth_failure_count += 1
+                        if self._auth_failure_count >= 3:
+                            self._auth_circuit_open_until = time.monotonic() + 60.0  # 60s cooldown
+                            logger.warning("Opened IIFL auth circuit breaker for 60s due to repeated failures")
                         # Return immediately for expired codes - don't try fallbacks
                         return {"error": f"Auth failed: {error_msg}", "auth_code_expired": True}
                 
-                if env_name in ["development", "dev", "test", "testing"]:
-                    logger.warning("⚠️  Using mock session for development/testing")
+                # Allow mock fallback ONLY if explicitly enabled via env flag or SAFE_MODE is active
+                allow_dev_mock = os.getenv("IIFL_ALLOW_DEV_MOCK", "false").lower() == "true"
+                if env_name in ["development", "dev", "test", "testing"] and (getattr(self, "safe_mode", False) or allow_dev_mock):
+                    logger.warning("⚠️  Using mock session due to SAFE_MODE or IIFL_ALLOW_DEV_MOCK=true")
                     self.session_token = f"mock_token_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                     return {"access_token": self.session_token, "expires_in": 3600}
+                # In production, never fallback to mock — bubble up auth failure
+                if env_name == "production":
+                    return {"error": "Authentication failed - production mode prohibits mock token"}
                 
                 logger.error("❌ Authentication failed in production environment")
+                # Increment failure count and possibly open circuit even without explicit error
+                self._auth_failure_count += 1
+                if self._auth_failure_count >= 3:
+                    self._auth_circuit_open_until = time.monotonic() + 60.0
+                    logger.warning("Opened IIFL auth circuit breaker for 60s due to repeated failures")
                 return {"error": "Authentication failed - check auth code", "auth_code_expired": True}
                     
             except Exception as e:
                 logger.error(f"IIFL API authentication exception: {str(e)}")
                 env_name = str(getattr(self.settings, "environment", "development")).lower()
                 
-                if env_name in ["development", "dev", "test", "testing"]:
-                    logger.warning("⚠️  Using mock session for development/testing due to exception")
+                allow_dev_mock = os.getenv("IIFL_ALLOW_DEV_MOCK", "false").lower() == "true"
+                if env_name in ["development", "dev", "test", "testing"] and (getattr(self, "safe_mode", False) or allow_dev_mock):
+                    logger.warning("⚠️  Using mock session due to SAFE_MODE or IIFL_ALLOW_DEV_MOCK=true (exception path)")
                     self.session_token = f"mock_token_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                     return {"access_token": self.session_token, "expires_in": 3600}
+                if env_name == "production":
+                    return {"error": f"Authentication exception in production: {str(e)}"}
                 
                 logger.error("❌ Authentication exception in production environment")
+                # Increment failure count and possibly open circuit
+                self._auth_failure_count += 1
+                if self._auth_failure_count >= 3:
+                    self._auth_circuit_open_until = time.monotonic() + 60.0
+                    logger.warning("Opened IIFL auth circuit breaker for 60s due to repeated exceptions")
                 return {"error": f"Authentication exception: {str(e)}", "critical_error": True}
     
     async def _ensure_authenticated(self) -> bool:
@@ -377,6 +489,12 @@ class IIFLAPIService:
             logger.debug(f"Using existing session token: {self.session_token[:10]}...")
             return True
         
+        # In SAFE_MODE, synthesize a mock token immediately
+        if getattr(self, "safe_mode", False):
+            self.session_token = f"mock_token_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            self.token_expiry = None
+            return True
+
         # Slow path: No token. Try loading from file cache first.
         self.session_token = self._load_token_from_cache()
         if self.session_token:
@@ -388,6 +506,20 @@ class IIFLAPIService:
     
     async def _make_api_request(self, method: str, endpoint: str, data: Optional[Dict] = None) -> Optional[Dict]:
         """Make an authenticated API request using the session token."""
+        # In SAFE_MODE, never make external calls. Return a minimal stub or None.
+        if getattr(self, "safe_mode", False):
+            logger.warning(f"SAFE_MODE active - skipping external call {method} {endpoint}")
+            # Return basic stubs for a few known endpoints to keep UI responsive
+            stub_map = {
+                "/profile": {"status": "Ok", "name": "SAFE_MODE", "account_type": "mock"},
+                "/limits": {"status": "Ok", "availableMargin": 0, "usedMargin": 0},
+                "/orders": {"status": "Ok", "result": []},
+                "/trades": {"status": "Ok", "result": []},
+            }
+            # Normalize endpoint key (strip base) for matching
+            key = "/" + endpoint.lstrip("/")
+            return stub_map.get(key, None)
+
         if not await self._ensure_authenticated():
             return None
         
@@ -438,19 +570,25 @@ class IIFLAPIService:
                 except Exception:
                     masked_headers["Authorization"] = "Bearer ***"
 
-            # Enhanced request logging
+            # Enhanced request logging (guarded)
             logger.info(f"IIFL API Request: {method.upper()} {url}")
-            logger.info(f"Request Headers: {json.dumps(masked_headers)}")
-            logger.info(f"Request Body: {json.dumps(request_body)}")
+            if self.debug_http_logging:
+                try:
+                    logger.info(f"Request Headers: {json.dumps(masked_headers)}")
+                    # cap request body log size
+                    logger.info(f"Request Body: {json.dumps(request_body)[:2000]}")
+                except Exception:
+                    pass
             
             # Log to specialized API logger
-            trading_logger.log_system_event("iifl_api_request", {
-                "method": method.upper(),
-                "url": url,
-                "endpoint": endpoint,
-                "has_bearer_token": bool(self.session_token),
-                "data_keys": _request_body_keys(request_body)
-            })
+            if not getattr(self, "disable_trading_logger", False):
+                trading_logger.log_system_event("iifl_api_request", {
+                    "method": method.upper(),
+                    "url": url,
+                    "endpoint": endpoint,
+                    "has_bearer_token": bool(self.session_token),
+                    "data_keys": _request_body_keys(request_body)
+                })
 
             try:
                 attempted_reauth = False
@@ -478,7 +616,11 @@ class IIFLAPIService:
                             masked_headers_loop["Authorization"] = f"Bearer {preview}"
                         except Exception:
                             masked_headers_loop["Authorization"] = "Bearer ***"
-                    logger.info(f"IIFL API Attempt Headers: {json.dumps(masked_headers_loop)}")
+                    if self.debug_http_logging:
+                        try:
+                            logger.info(f"IIFL API Attempt Headers: {json.dumps(masked_headers_loop)}")
+                        except Exception:
+                            pass
 
                     # Implement small transient retry loop for network-level errors
                     max_attempts = 3
@@ -517,21 +659,30 @@ class IIFLAPIService:
 
                     # Enhanced response logging
                     logger.info(f"IIFL API Response: {response.status_code} in {response_time:.3f}s")
-                    logger.info(f"Response Headers: {json.dumps(dict(response.headers))}")
+                    if self.debug_http_logging:
+                        try:
+                            logger.info(f"Response Headers: {json.dumps(dict(response.headers))}")
+                        except Exception:
+                            pass
 
                     try:
                         response_data = response.json()
-                        logger.info(f"Response Body: {json.dumps(response_data)}")
+                        if self.debug_http_logging:
+                            try:
+                                logger.info(f"Response Body: {json.dumps(response_data)[:2000]}")
+                            except Exception:
+                                pass
 
                         # Log API call
-                        trading_logger.log_api_call(
-                            endpoint=url,
-                            method=method.upper(),
-                            status_code=response.status_code,
-                            response_time=response_time,
-                            error=None if response.status_code == 200 else f"HTTP {response.status_code}",
-                            request_body=request_body
-                        )
+                        if not getattr(self, "disable_trading_logger", False):
+                            trading_logger.log_api_call(
+                                endpoint=url,
+                                method=method.upper(),
+                                status_code=response.status_code,
+                                response_time=response_time,
+                                error=None if response.status_code == 200 else f"HTTP {response.status_code}",
+                                request_body=None
+                            )
 
                         # Log response details
                         status_field = None
@@ -545,17 +696,18 @@ class IIFLAPIService:
                                 if isinstance(value, list):
                                     result_count = len(value)
                                     break
-                        trading_logger.log_system_event("iifl_api_response", {
-                            "url": url,
-                            "method": method.upper(),
-                            "status_code": response.status_code,
-                            "response_time_ms": response_time * 1000,
-                            "response_keys": list(response_data.keys()) if isinstance(response_data, dict) else "non_dict",
-                            "success": response.status_code == 200,
-                            "status": status_field,
-                            "message_preview": (str(message_field)[:120] + ("..." if message_field and len(str(message_field)) > 120 else "")) if message_field else None,
-                            "result_count": result_count
-                        })
+                        if not getattr(self, "disable_trading_logger", False):
+                            trading_logger.log_system_event("iifl_api_response", {
+                                "url": url,
+                                "method": method.upper(),
+                                "status_code": response.status_code,
+                                "response_time_ms": response_time * 1000,
+                                "response_keys": list(response_data.keys()) if isinstance(response_data, dict) else "non_dict",
+                                "success": response.status_code == 200,
+                                "status": status_field,
+                                "message_preview": (str(message_field)[:120] + ("..." if message_field and len(str(message_field)) > 120 else "")) if message_field else None,
+                                "result_count": result_count
+                            })
 
                     except json.JSONDecodeError:
                         logger.info(f"Response Body (non-JSON): {response.text}")
@@ -566,7 +718,8 @@ class IIFLAPIService:
 
                     if response.status_code == 401 and not attempted_reauth:
                         logger.warning("Received 401 Unauthorized from IIFL API. Re-authenticating and retrying once.")
-                        trading_logger.log_system_event("iifl_api_unauthorized", {"url": url, "endpoint": endpoint})
+                        if not getattr(self, "disable_trading_logger", False):
+                            trading_logger.log_system_event("iifl_api_unauthorized", {"url": url, "endpoint": endpoint})
                         # Clear token and re-authenticate
                         self.session_token = None
                         self._save_token_to_cache("") # Clear cached token
@@ -592,32 +745,35 @@ class IIFLAPIService:
                     logger.error(error_msg)
 
                     # Log API call with a snippet of the response body to help debug 4xx/5xx cases
-                    trading_logger.log_api_call(
-                        endpoint=url,
-                        method=method.upper(),
-                        status_code=response.status_code,
-                        response_time=response_time,
-                        error=f"HTTP {response.status_code}: {body_preview}",
-                        request_body=request_body
-                    )
+                    if not getattr(self, "disable_trading_logger", False):
+                        trading_logger.log_api_call(
+                            endpoint=url,
+                            method=method.upper(),
+                            status_code=response.status_code,
+                            response_time=response_time,
+                            error=f"HTTP {response.status_code}: {body_preview}",
+                            request_body=None
+                        )
 
                     # Also log an error event with full response body (non-sensitive) for later inspection
                     try:
-                        trading_logger.log_system_event("iifl_api_error_response", {
-                            "url": url,
-                            "status_code": response.status_code,
-                            "response_headers": dict(response.headers),
-                            "response_body": response_body,
-                            "request_body": request_body
-                        })
+                        if not getattr(self, "disable_trading_logger", False):
+                            trading_logger.log_system_event("iifl_api_error_response", {
+                                "url": url,
+                                "status_code": response.status_code,
+                                "response_headers": dict(response.headers),
+                                "response_body": response_body,
+                                "request_body": None
+                            })
                     except Exception:
                         # best-effort logging: don't fail the flow if complex object can't be serialized
-                        trading_logger.log_system_event("iifl_api_error_response", {
-                            "url": url,
-                            "status_code": response.status_code,
-                            "response_text_preview": body_preview,
-                            "request_body": request_body
-                        })
+                        if not getattr(self, "disable_trading_logger", False):
+                            trading_logger.log_system_event("iifl_api_error_response", {
+                                "url": url,
+                                "status_code": response.status_code,
+                                "response_text_preview": body_preview,
+                                "request_body": None
+                            })
 
                     return None
 
@@ -625,20 +781,21 @@ class IIFLAPIService:
                 response_time = time.perf_counter() - start_time
                 error_msg = f"IIFL API request exception: {str(e)}"
                 logger.error(error_msg)
-                trading_logger.log_api_call(
-                    endpoint=url,
-                    method=method.upper(),
-                    status_code=0,
-                    response_time=response_time,
-                    error=str(e),
-                    request_body=request_body
-                )
-                trading_logger.log_error("iifl_api", e, {
-                    "url": url,
-                    "method": method.upper(),
-                    "endpoint": endpoint,
-                    "response_time": response_time
-                })
+                if not getattr(self, "disable_trading_logger", False):
+                    trading_logger.log_api_call(
+                        endpoint=url,
+                        method=method.upper(),
+                        status_code=0,
+                        response_time=response_time,
+                        error=str(e),
+                        request_body=None
+                    )
+                    trading_logger.log_error("iifl_api", e, {
+                        "url": url,
+                        "method": method.upper(),
+                        "endpoint": endpoint,
+                        "response_time": response_time
+                    })
                 return None
                 
         except Exception as e:
@@ -647,12 +804,13 @@ class IIFLAPIService:
             logger.error(error_msg)
             
             # Log general exception
-            trading_logger.log_error("iifl_api", e, {
-                "url": url,
-                "method": method.upper(),
-                "endpoint": endpoint,
-                "response_time": response_time
-            })
+            if not getattr(self, "disable_trading_logger", False):
+                trading_logger.log_error("iifl_api", e, {
+                    "url": url,
+                    "method": method.upper(),
+                    "endpoint": endpoint,
+                    "response_time": response_time
+                })
             
             return None
 
@@ -761,8 +919,30 @@ class IIFLAPIService:
     
     # Portfolio
     async def get_holdings(self) -> Optional[Dict]:
-        """Get long-term equity holdings"""
+        """Get long-term equity holdings (cached for 30 seconds)"""
+        # Try Redis cache first
+        if REDIS_AVAILABLE:
+            try:
+                redis = await get_redis_service()
+                cached = await redis.get(CacheKeys.API_HOLDINGS)
+                if cached:
+                    logger.debug("✅ Holdings from Redis cache")
+                    return cached
+            except Exception as e:
+                logger.debug(f"Redis cache miss for holdings: {e}")
+        
+        # Fetch from API
         holdings_data = await self._make_api_request("GET", "/holdings")
+        
+        # Cache the result
+        if holdings_data and REDIS_AVAILABLE:
+            try:
+                redis = await get_redis_service()
+                await redis.set(CacheKeys.API_HOLDINGS, holdings_data, ttl=CacheTTL.API_FAST)
+                logger.debug("✅ Holdings cached in Redis")
+            except Exception as e:
+                logger.debug(f"Failed to cache holdings: {e}")
+        
         if holdings_data:
             logger.info(f"Holdings data received: {json.dumps(holdings_data, indent=2)}")
         else:
@@ -770,12 +950,53 @@ class IIFLAPIService:
         return holdings_data
 
     async def get_positions(self) -> Optional[Dict]:
-        """Get current open positions"""
-        return await self._make_api_request("GET", "/positions")
+        """Get current open positions (cached for 30 seconds)"""
+        # Try Redis cache first
+        if REDIS_AVAILABLE:
+            try:
+                redis = await get_redis_service()
+                cached = await redis.get(CacheKeys.API_POSITIONS)
+                if cached:
+                    logger.debug("✅ Positions from Redis cache")
+                    return cached
+            except Exception as e:
+                logger.debug(f"Redis cache miss for positions: {e}")
+        
+        # Fetch from API
+        positions_data = await self._make_api_request("GET", "/positions")
+        
+        # Cache the result
+        if positions_data and REDIS_AVAILABLE:
+            try:
+                redis = await get_redis_service()
+                await redis.set(CacheKeys.API_POSITIONS, positions_data, ttl=CacheTTL.API_FAST)
+                logger.debug("✅ Positions cached in Redis")
+            except Exception as e:
+                logger.debug(f"Failed to cache positions: {e}")
+        
+        return positions_data
     
     # Market Data
     async def get_historical_data(self, symbol: str, interval: str, from_date: str, to_date: str) -> Optional[Dict]:
-        """Get historical OHLCV data with a single request (no fallbacks)."""
+        """Get historical OHLCV data with a single request (cached for 24 hours)"""
+        
+        # Try Redis cache first (historical data is immutable)
+        if REDIS_AVAILABLE:
+            try:
+                redis = await get_redis_service()
+                cache_key = CacheKeys.format_key(
+                    CacheKeys.API_CANDLES,
+                    symbol=symbol,
+                    interval=interval,
+                    from_date=from_date,
+                    to_date=to_date
+                )
+                cached = await redis.get(cache_key)
+                if cached:
+                    logger.debug(f"✅ Historical data for {symbol} from Redis cache")
+                    return cached
+            except Exception as e:
+                logger.debug(f"Redis cache miss for historical data: {e}")
 
         # --- Date and Interval Preparation ---
         try:
@@ -829,7 +1050,25 @@ class IIFLAPIService:
             "payload_keys": list(payload.keys())
         })
 
-        return await self._make_api_request("POST", "/marketdata/historicaldata", payload)
+        result = await self._make_api_request("POST", "/marketdata/historicaldata", payload)
+        
+        # Cache successful results (historical data doesn't change)
+        if result and REDIS_AVAILABLE:
+            try:
+                redis = await get_redis_service()
+                cache_key = CacheKeys.format_key(
+                    CacheKeys.API_CANDLES,
+                    symbol=symbol,
+                    interval=interval,
+                    from_date=from_date,
+                    to_date=to_date
+                )
+                await redis.set(cache_key, result, ttl=CacheTTL.API_HISTORICAL)
+                logger.debug(f"✅ Historical data for {symbol} cached in Redis for 24h")
+            except Exception as e:
+                logger.debug(f"Failed to cache historical data: {e}")
+        
+        return result
     
     async def get_market_quotes(self, instruments: List[str]) -> Optional[Dict]:
         """Get real-time market quotes (instrumentId only)"""

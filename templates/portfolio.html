@@ -4,6 +4,24 @@
 
 {% block content %}
 <div x-data="portfolioPage" class="space-y-6">
+    <!-- IIFL Auth Status Banner -->
+    <div x-show="authChecked && !auth.authenticated" class="bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded" role="alert">
+        <div class="flex items-start justify-between">
+            <div>
+                <p class="text-sm text-yellow-700 font-semibold">IIFL broker is not authenticated.</p>
+                <p class="mt-1 text-sm text-yellow-700">
+                    Portfolio positions/holdings may be empty until you refresh your IIFL session.
+                    Update today's Auth Code on the Auth page or try refreshing the token below.
+                </p>
+            </div>
+            <div class="flex gap-2">
+                <a href="/auth" class="inline-flex items-center px-3 py-1.5 rounded-md text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700">Open Auth Page</a>
+                <button @click="refreshToken" class="inline-flex items-center px-3 py-1.5 rounded-md text-sm font-medium bg-white text-gray-700 border border-gray-300 hover:bg-gray-50">
+                    Refresh Token
+                </button>
+            </div>
+        </div>
+    </div>
     <!-- Portfolio Summary -->
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div class="bg-white overflow-hidden shadow rounded-lg card-shadow">
@@ -176,11 +194,50 @@ document.addEventListener('alpine:init', () => {
         availableMargin: 0,
         positions: [],
         holdings: [],
+        auth: { authenticated: false, is_authenticated: false, token_expiry: null, auth_code_expiry: null },
+        authChecked: false,
         
         async init() {
+            // Check IIFL auth status first for better UX
+            await this.checkAuthStatus();
             await this.loadPortfolioData();
             // Refresh every 30 seconds
             setInterval(() => this.loadPortfolioData(), 30000);
+            setInterval(() => this.checkAuthStatus(), 30000);
+        },
+        
+        async checkAuthStatus() {
+            try {
+                const res = await fetch('/api/auth/status');
+                const data = await res.json();
+                // Normalize field name
+                this.auth = {
+                    authenticated: !!(data.authenticated ?? data.is_authenticated),
+                    is_authenticated: !!(data.authenticated ?? data.is_authenticated),
+                    token_expiry: data.token_expiry || null,
+                    auth_code_expiry: data.auth_code_expiry || null,
+                };
+            } catch (e) {
+                // Keep banner hidden if status cannot be checked
+            } finally {
+                this.authChecked = true;
+            }
+        },
+        
+        async refreshToken() {
+            try {
+                const res = await fetch('/api/auth/refresh-token', { method: 'POST' });
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    showToast('IIFL token refreshed successfully', 'success');
+                    await this.checkAuthStatus();
+                    await this.loadPortfolioData();
+                } else {
+                    showToast(data.detail || 'Failed to refresh IIFL token', 'error');
+                }
+            } catch (e) {
+                showToast('Failed to refresh IIFL token', 'error');
+            }
         },
         
         async loadPortfolioData() {

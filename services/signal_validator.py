@@ -13,10 +13,16 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from enum import Enum
 
-import openai
-from openai import AsyncOpenAI
-import anthropic
-from anthropic import AsyncAnthropic
+# Optional third-party LLM clients; import lazily/defensively to avoid hard dependency at startup
+try:
+    from openai import AsyncOpenAI  # type: ignore
+except Exception:  # ImportError or any env issue
+    AsyncOpenAI = None  # type: ignore
+
+try:
+    from anthropic import AsyncAnthropic  # type: ignore
+except Exception:
+    AsyncAnthropic = None  # type: ignore
 import aiohttp
 
 from config.settings import get_settings
@@ -75,13 +81,17 @@ class SignalValidationService:
         try:
             # OpenAI
             openai_key = getattr(self.settings, 'OPENAI_API_KEY', None)
-            if openai_key:
+            if openai_key and AsyncOpenAI is not None:
                 self.openai_client = AsyncOpenAI(api_key=openai_key)
+            elif openai_key and AsyncOpenAI is None:
+                self.logger.warning("OpenAI key provided but openai client not installed; skipping OpenAI initialization")
                 
             # Anthropic
             anthropic_key = getattr(self.settings, 'ANTHROPIC_API_KEY', None)
-            if anthropic_key:
+            if anthropic_key and AsyncAnthropic is not None:
                 self.anthropic_client = AsyncAnthropic(api_key=anthropic_key)
+            elif anthropic_key and AsyncAnthropic is None:
+                self.logger.warning("Anthropic key provided but anthropic client not installed; skipping Anthropic initialization")
             
             # Perplexity
             perplexity_key = getattr(self.settings, 'PERPLEXITY_API_KEY', None)

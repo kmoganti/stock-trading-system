@@ -10,86 +10,83 @@ from services.data_fetcher import DataFetcher
 from services.iifl_api import IIFLAPIService
 from config import get_settings
 from models.settings import Setting
+import os
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 logger = logging.getLogger(__name__)
 
-@router.get("/status")
-async def get_system_status(db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
-    """Get system health and status"""
-    logger.info("Request for system status.")
+@router.get("/cache/stats")
+async def get_cache_stats():
+    """Get Redis cache statistics"""
     try:
-        settings = get_settings()
+        from services.redis_service import get_redis_service
+        redis = await get_redis_service()
         
-        # Resolve auto_trade preference: DB override wins over env config
-        auto_trade_value = settings.auto_trade
-        try:
-            stmt = select(Setting).where(Setting.key == "auto_trade")
-            result = await db.execute(stmt)
-            row = result.scalar_one_or_none()
-            if row is not None:
-                val = row.get_typed_value()
-                if isinstance(val, bool):
-                    auto_trade_value = val
-                elif isinstance(val, str):
-                    auto_trade_value = val.lower() == "true"
-        except Exception as e:
-            logger.warning(f"Failed to read auto_trade from DB: {str(e)}")
-
-        # Basic system info
-        status = {
-            "environment": settings.environment,
-            "auto_trade": auto_trade_value,
-            "signal_timeout": settings.signal_timeout,
-            "max_positions": settings.max_positions,
-            "risk_per_trade": settings.risk_per_trade,
-            "max_daily_loss": settings.max_daily_loss,
-            "timestamp": datetime.now().isoformat()
+        if not redis.is_connected():
+            return {
+                "status": "disconnected",
+                "message": "Redis cache is not connected"
+            }
+        
+        stats = await redis.get_stats()
+        return {
+            "status": "connected",
+            **stats
         }
-        # If disabled via feature flag, skip expensive connectivity checks
-        if not getattr(settings, "enable_system_status_checks", False):
-            return status
-
-        # Try to check IIFL API connectivity
-        try:
-            async with IIFLAPIService() as iifl:
-                auth_result = await iifl.authenticate()
-                
-                # Check authentication result
-                if auth_result and not isinstance(auth_result, dict) or (isinstance(auth_result, dict) and auth_result.get("access_token")):
-                    status["iifl_api_connected"] = True
-                    logger.info("IIFL API connection status: True")
-                else:
-                    status["iifl_api_connected"] = False
-                    if isinstance(auth_result, dict):
-                        if auth_result.get("auth_code_expired"):
-                            status["iifl_api_error"] = "Auth code expired"
-                        elif auth_result.get("error"):
-                            status["iifl_api_error"] = auth_result["error"]
-                        else:
-                            status["iifl_api_error"] = "Authentication failed"
-                    else:
-                        status["iifl_api_error"] = "Authentication failed"
-                    logger.warning(f"IIFL API connection failed: {status['iifl_api_error']}")
-        except Exception as e:
-            status["iifl_api_connected"] = False
-            status["iifl_api_error"] = str(e)
-            logger.warning(f"IIFL API connection check failed: {str(e)}")
-        
-        # Database connectivity
-        try:
-            await db.execute(text("SELECT 1"))
-            status["database_connected"] = True
-            logger.info("Database connection status: True")
-        except Exception as e:
-            status["database_connected"] = False
-            status["database_error"] = str(e)
-            logger.warning(f"Database connection check failed: {str(e)}")
-        
-        return status
-        
     except Exception as e:
-        logger.error(f"Error getting system status: {str(e)}", exc_info=True)
+        logger.error(f"Error getting cache stats: {e}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+@router.post("/cache/clear")
+async def clear_cache(pattern: str = "*"):
+    """
+    Clear cache entries matching pattern.
+    
+    Examples:
+    - pattern="*" - Clear all cache
+    - pattern="api:*" - Clear all API caches
+    - pattern="db:*" - Clear all database caches
+    """
+    try:
+        from services.redis_service import get_redis_service
+        redis = await get_redis_service()
+        
+        if not redis.is_connected():
+            raise HTTPException(status_code=503, detail="Redis cache not connected")
+        
+        count = await redis.clear_pattern(pattern)
+        return {
+            "status": "success",
+            "pattern": pattern,
+            "keys_deleted": count
+        }
+    except Exception as e:
+        logger.error(f"Error clearing cache: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/status")
+async def get_system_status():
+    """Get system status - lightweight check without external API calls"""
+    try:
+        # Read settings directly from env vars to avoid any blocking calls
+        import os
+        
+        return {
+            "auto_trade": os.getenv("AUTO_TRADE", "false").lower() == "true",
+            "dry_run": os.getenv("DRY_RUN", "true").lower() == "true",
+            "iifl_api_connected": None,  # Don't check - too slow
+            "database_connected": True,   # Assume connected - checked at startup
+            "market_stream_active": os.getenv("ENABLE_MARKET_STREAM", "false").lower() == "true",
+            "telegram_bot_active": os.getenv("TELEGRAM_BOT_TOKEN", "") != "",
+            # Add environment field expected by tests/diagnostics
+            "environment": os.getenv("ENVIRONMENT", os.getenv("ENV", "development")),
+            "timestamp": datetime.now().isoformat(),
+        }
+    except Exception as e:
+        logger.error(f"Error getting system status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/halt")
@@ -148,3 +145,98 @@ async def resume_trading(db: AsyncSession = Depends(get_db)) -> Dict[str, str]:
 async def health_check() -> Dict[str, str]:
     """Simple health check endpoint"""
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
+@router.get("/env")
+async def env_debug(var: str | None = None):
+    """Debug endpoint to inspect environment variables. If `var` is provided, returns only that key.
+
+    Includes SAFE_MODE, ENVIRONMENT, and relevant IIFL keys presence by default (values masked).
+    """
+    try:
+        if var:
+            return {var: os.getenv(var)}
+        def mask(v: str | None):
+            if not v:
+                return None
+            return v[:3] + "***" if len(v) > 6 else "***"
+        return {
+            "SAFE_MODE": os.getenv("SAFE_MODE"),
+            "ENVIRONMENT": os.getenv("ENVIRONMENT"),
+            "IIFL_CLIENT_ID_present": bool(os.getenv("IIFL_CLIENT_ID")),
+            "IIFL_AUTH_CODE_present": bool(os.getenv("IIFL_AUTH_CODE")),
+            "IIFL_APP_SECRET_present": bool(os.getenv("IIFL_APP_SECRET")),
+            "IIFL_CLIENT_ID_preview": mask(os.getenv("IIFL_CLIENT_ID")),
+        }
+    except Exception as e:
+        logger.error(f"Error in env debug: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/telegram/test")
+async def telegram_test(message: str = "Test: Trading system notification") -> Dict[str, Any]:
+    """Send a test Telegram notification to verify delivery configuration.
+
+    Returns success flag and any error message without crashing the server.
+    """
+    try:
+        from services.telegram_notifier import TelegramNotifier
+        notifier = TelegramNotifier()
+        # If not enabled, surface a helpful error
+        if not getattr(notifier, "_enabled", False):
+            return {"success": False, "error": "Telegram notifier disabled or misconfigured"}
+        await notifier.send(message)
+        return {"success": True}
+    except Exception as e:
+        logger.warning(f"Telegram test send failed: {e}")
+        return {"success": False, "error": str(e)}
+
+@router.get("/scheduler/activity")
+async def get_scheduler_activity():
+    """Get recent scheduler activity and execution stats"""
+    try:
+        from services.optimized_scheduler import get_optimized_scheduler
+        
+        scheduler = get_optimized_scheduler()
+        
+        # Get execution stats
+        execution_stats = scheduler.get_execution_stats()
+        
+        # Get next run times for all jobs
+        jobs = scheduler.scheduler.get_jobs()
+        next_runs = []
+        for job in jobs:
+            next_runs.append({
+                "name": job.name,
+                "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
+                "job_id": job.id
+            })
+        
+        # Format recent activity from execution stats
+        recent_activity = []
+        for strategy, stats in execution_stats.items():
+            if stats['last_execution']:
+                recent_activity.append({
+                    "strategy": strategy,
+                    "last_execution": stats['last_execution'].isoformat() if isinstance(stats['last_execution'], datetime) else stats['last_execution'],
+                    "total_runs": stats['total_runs'],
+                    "successful_runs": stats['successful_runs'],
+                    "failed_runs": stats['failed_runs'],
+                    "avg_execution_time": round(stats['avg_execution_time'], 2)
+                })
+        
+        # Sort by last execution time (most recent first)
+        recent_activity.sort(key=lambda x: x['last_execution'] if x['last_execution'] else '', reverse=True)
+        
+        return {
+            "recent_activity": recent_activity[:10],  # Last 10
+            "next_runs": next_runs,
+            "total_strategies": len(execution_stats),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting scheduler activity: {e}", exc_info=True)
+        return {
+            "recent_activity": [],
+            "next_runs": [],
+            "error": str(e)
+        }

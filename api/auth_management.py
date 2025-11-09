@@ -13,12 +13,16 @@ class AuthCodeUpdate(BaseModel):
     auth_code: str
 
 class AuthStatus(BaseModel):
-    # Align with tests expecting 'authenticated' and 'client_id'
+    # Align with tests and UI expecting 'authenticated' and 'is_authenticated'
     authenticated: bool
+    # Backward/forward compatibility for UI templates referring to is_authenticated
+    is_authenticated: Optional[bool] = None
     client_id: Optional[str] = None
     token_expiry: Optional[datetime] = None
     auth_code_expiry: Optional[datetime] = None
     last_error: Optional[str] = None
+    # Optional details for debug UIs
+    details: Optional[dict] = None
 
 @router.get("/status", response_model=AuthStatus)
 async def get_auth_status():
@@ -29,6 +33,40 @@ async def get_auth_status():
         # Consider authenticated if there is a non-mock session token
         token = getattr(service, 'session_token', None)
         is_real_token = bool(token) and not str(token).startswith("mock_")
+
+        # If no in-memory token detected, try light recovery paths to avoid false negatives
+        if not is_real_token:
+            try:
+                # 1) Try file cache (fast, local)
+                cached = service._load_token_from_cache()
+                if cached:
+                    service.session_token = cached
+                    token = cached
+                    is_real_token = True
+            except Exception:
+                pass
+
+        if not is_real_token:
+            # 2) Try a very short auth ping (guarded by timeout) to avoid confusing UI
+            try:
+                import asyncio
+                auth_result = await asyncio.wait_for(service.authenticate(), timeout=4.0)
+                if isinstance(auth_result, dict) and auth_result.get("access_token") and not str(auth_result.get("access_token")).startswith("mock_"):
+                    token = auth_result.get("access_token")
+                    is_real_token = True
+            except Exception:
+                # Ignore here; we'll attempt a profile call next
+                pass
+
+        if not is_real_token:
+            # 3) As a last resort, attempt a very quick profile call which ensures auth inside
+            try:
+                import asyncio
+                prof = await asyncio.wait_for(service.get_profile(), timeout=3.5)
+                if isinstance(prof, dict) and str((prof.get("status") or prof.get("stat") or "")).lower() == "ok":
+                    is_real_token = True
+            except Exception:
+                pass
         try:
             from config.settings import get_settings
             client_id_val = getattr(get_settings(), 'iifl_client_id', None)
@@ -36,6 +74,7 @@ async def get_auth_status():
             client_id_val = None
         auth_status = AuthStatus(
             authenticated=is_real_token,
+            is_authenticated=is_real_token,
             client_id=client_id_val,
             token_expiry=getattr(service, 'token_expiry', None),
             auth_code_expiry=getattr(service, 'auth_code_expiry', None),
@@ -46,6 +85,7 @@ async def get_auth_status():
     except Exception as e:
         logger.error(f"Error getting auth status: {str(e)}")
         return AuthStatus(
+            authenticated=False,
             is_authenticated=False,
             token_expiry=None,
             auth_code_expiry=None,
@@ -118,6 +158,18 @@ async def refresh_token():
     logger.info("Request to refresh authentication token.")
     try:
         service = IIFLAPIService()
+        # Clear any existing in-memory and cached token to force a real re-auth
+        try:
+            service.session_token = None
+            service.token_expiry = None
+            # Clear file cache too
+            try:
+                service._save_token_to_cache("")  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        except Exception:
+            pass
+
         auth_result = await service.authenticate()
         
         if auth_result and not isinstance(auth_result, dict) or (isinstance(auth_result, dict) and auth_result.get("access_token")):
@@ -194,3 +246,48 @@ async def validate_auth_code(auth_data: AuthCodeUpdate):
     except Exception as e:
         logger.error(f"Error validating auth code: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to validate auth code: {str(e)}")
+
+@router.get("/debug")
+async def auth_debug():
+    """Return detailed auth debug info: token presence, quick profile probe, and settings preview."""
+    try:
+        service = IIFLAPIService()
+        token = getattr(service, 'session_token', None)
+        token_preview = None
+        if token:
+            t = str(token)
+            token_preview = (t[:6] + "***" + t[-4:]) if len(t) > 12 else (t[:3] + "***")
+        profile_status = None
+        profile_message = None
+        try:
+            prof = await service.get_profile()
+            if isinstance(prof, dict):
+                profile_status = prof.get("status") or prof.get("stat")
+                profile_message = prof.get("message") or prof.get("emsg")
+        except Exception as e:
+            profile_message = f"profile_error: {e}"
+
+        try:
+            from config.settings import get_settings
+            st = get_settings()
+            client_id = getattr(st, 'iifl_client_id', None)
+            env = getattr(st, 'environment', None)
+        except Exception:
+            client_id = None
+            env = None
+
+        return {
+            "authenticated": bool(token) and not str(token).startswith("mock_"),
+            "token_present": bool(token),
+            "token_preview": token_preview,
+            "token_expiry": getattr(service, 'token_expiry', None),
+            "auth_code_expiry": getattr(service, 'auth_code_expiry', None),
+            "profile_status": profile_status,
+            "profile_message": profile_message,
+            "client_id": client_id,
+            "environment": env,
+            "safe_mode": getattr(service, 'safe_mode', False),
+        }
+    except Exception as e:
+        logger.error(f"Error in auth debug: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

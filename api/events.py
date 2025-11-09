@@ -38,40 +38,46 @@ async def get_all_events(
     order_manager: OrderManager = Depends(get_order_manager)
 ) -> List[Dict[str, Any]]:
     """Get a combined list of recent activities (signals, executions, risk events)."""
-    try:
-        # Fetch signals (pending, executed) and risk events in parallel
-        signals_task = order_manager.get_recent_signals(limit=limit)
-        risk_events_task = risk_service.get_recent_risk_events(limit=limit)
-        
-        all_signals, risk_events = await asyncio.gather(signals_task, risk_events_task)
-        
-        events = []
-        
-        # Process signals
-        for signal in all_signals:
-            event_type = "execution" if signal.get('status') == 'executed' else "signal"
-            events.append({
-                "type": event_type,
-                "message": f"{signal.get('signal_type', '').upper()} signal for {signal.get('symbol')}",
-                "timestamp": signal.get('created_at'),
-                "details": signal
-            })
-            
-        # Process risk events
-        for risk_event in risk_events:
-            events.append({
-                "type": "risk",
-                "message": risk_event.get('description'),
-                "timestamp": risk_event.get('timestamp'),
-                "details": risk_event
-            })
-            
-        # Sort events by timestamp descending
-        events.sort(key=lambda x: x['timestamp'], reverse=True)
-        
-        # Limit the total number of events
-        return events[:limit]
-        
-    except Exception as e:
-        logger.error(f"Error fetching combined events: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch recent activity")
+    
+    # TEMPORARY: Return empty events to avoid IIFL API calls
+    logger.warning("Events endpoint - returning empty data (IIFL API disabled)")
+    return []
+    
+    # Original code commented out to prevent hanging
+    # try:
+    #     # Fetch signals (pending, executed) and risk events in parallel
+    #     signals_task = order_manager.get_recent_signals(limit=limit)
+    #     risk_events_task = risk_service.get_recent_risk_events(limit=limit)
+    #     
+    #     all_signals, risk_events = await asyncio.gather(signals_task, risk_events_task)
+    #     
+    #     events = []
+    #     
+    #     # Process signals
+    #     for signal in all_signals:
+    #         event_type = "execution" if signal.get('status') == 'executed' else "signal"
+    #         events.append({
+    #             "type": event_type,
+    #             "message": f"{signal.get('signal_type', '').upper()} signal for {signal.get('symbol')}",
+    #             "timestamp": signal.get('created_at'),
+    #             "details": signal
+    #         })
+    #         
+    #     # Process risk events
+    #     for risk_event in risk_events:
+    #         events.append({
+    #             "type": "risk",
+    #             "message": risk_event.get('description'),
+    #             "timestamp": risk_event.get('timestamp'),
+    #             "details": risk_event
+    #         })
+    #         
+    #     # Sort events by timestamp descending
+    #     events.sort(key=lambda x: x['timestamp'], reverse=True)
+    #     
+    #     # Limit the total number of events
+    #     return events[:limit]
+    #     
+    # except Exception as e:
+    #     logger.error(f"Error fetching combined events: {e}", exc_info=True)
+    #     raise HTTPException(status_code=500, detail="Failed to fetch recent activity")

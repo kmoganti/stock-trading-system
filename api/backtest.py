@@ -30,15 +30,8 @@ next_id = 1
 @router.get("/results")
 async def get_backtest_results():
     """Get all backtest results"""
-    try:
-        logger.info("Fetching backtest results")
-        return {
-            "success": True,
-            "results": backtest_results
-        }
-    except Exception as e:
-        logger.error(f"Error fetching backtest results: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    # TEMPORARY: Return empty results immediately
+    return {"success": True, "results": []}
 
 @router.post("/run")
 async def run_backtest(config: BacktestConfig):

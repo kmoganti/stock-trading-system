@@ -5,9 +5,16 @@ from models.watchlist import Watchlist, WatchlistCategory
 import logging
 from pathlib import Path
 import csv
- 
 
 logger = logging.getLogger(__name__)
+
+# Import Redis service for caching
+try:
+    from services.redis_service import get_redis_service, CacheKeys, CacheTTL
+    REDIS_AVAILABLE = True
+except ImportError:
+    REDIS_AVAILABLE = False
+    logger.warning("Redis service not available for watchlist caching")
 
 def _load_symbols_from_csv(file_path: str, symbol_column: str) -> List[str]:
     """Back-compat helper kept for callers; delegates to instance method format."""
@@ -31,7 +38,21 @@ class WatchlistService:
         self.db = db
     
     async def get_watchlist(self, active_only: bool = True, category: Optional[str] = None) -> List[str]:
-        """Get watchlist symbols, optionally filtered by category"""
+        """Get watchlist symbols, optionally filtered by category (cached for 5 minutes)"""
+        
+        # Try Redis cache first
+        if REDIS_AVAILABLE:
+            try:
+                redis = await get_redis_service()
+                cache_key = f"{CacheKeys.DB_WATCHLIST}:{active_only}:{category or 'all'}"
+                cached = await redis.get(cache_key)
+                if cached:
+                    logger.debug(f"✅ Watchlist from Redis cache (active={active_only}, category={category})")
+                    return cached
+            except Exception as e:
+                logger.debug(f"Redis cache miss for watchlist: {e}")
+        
+        # Query database
         base_query = select(Watchlist.symbol)
         if active_only:
             base_query = base_query.where(Watchlist.is_active == True)
@@ -39,7 +60,19 @@ class WatchlistService:
             base_query = base_query.where(Watchlist.category == category)
         query = base_query
         result = await self.db.execute(query)
-        return [row[0] for row in result.all()]
+        symbols = [row[0] for row in result.all()]
+        
+        # Cache the result
+        if REDIS_AVAILABLE:
+            try:
+                redis = await get_redis_service()
+                cache_key = f"{CacheKeys.DB_WATCHLIST}:{active_only}:{category or 'all'}"
+                await redis.set(cache_key, symbols, ttl=CacheTTL.DB_MEDIUM)
+                logger.debug(f"✅ Watchlist cached in Redis")
+            except Exception as e:
+                logger.debug(f"Failed to cache watchlist: {e}")
+        
+        return symbols
     
     async def add_symbols(self, symbols: List[str], category: Optional[str] = None) -> None:
         """Add symbols to watchlist for a given category"""
@@ -53,6 +86,9 @@ class WatchlistService:
         if new_symbols:
             await self.db.commit()
             logger.info(f"Added {len(new_symbols)} symbols to watchlist [{category_value}]")
+            
+            # Invalidate cache
+            await self._invalidate_watchlist_cache()
     
     async def remove_symbols(self, symbols: List[str], category: Optional[str] = None) -> None:
         """Remove symbols from watchlist (soft delete), optionally by category"""
@@ -64,6 +100,9 @@ class WatchlistService:
         await self.db.execute(stmt)
         await self.db.commit()
         logger.info(f"Removed {len(symbols)} symbols from watchlist{f' [{category}]' if category else ''}")
+        
+        # Invalidate cache
+        await self._invalidate_watchlist_cache()
 
     async def set_category(self, symbol: str, category: str) -> None:
         """Move a symbol to a different category and activate it"""
@@ -76,6 +115,21 @@ class WatchlistService:
         await self.db.execute(stmt)
         await self.db.commit()
         logger.info(f"Set category for {symbol} to {category}")
+        
+        # Invalidate cache
+        await self._invalidate_watchlist_cache()
+    
+    async def _invalidate_watchlist_cache(self):
+        """Clear all watchlist cache entries"""
+        if REDIS_AVAILABLE:
+            try:
+                redis = await get_redis_service()
+                # Clear all watchlist cache keys
+                cleared = await redis.clear_pattern(f"{CacheKeys.DB_WATCHLIST}:*")
+                if cleared > 0:
+                    logger.debug(f"✅ Invalidated {cleared} watchlist cache entries")
+            except Exception as e:
+                logger.debug(f"Failed to invalidate watchlist cache: {e}")
 
     async def set_category_for_all(self, category: str, active_only: Optional[bool] = None) -> int:
         """Bulk update category for all watchlist rows.

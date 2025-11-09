@@ -239,22 +239,64 @@ def log_operation(operation_name: str, component: str = "system"):
         raise
 
 def log_trade_execution(func):
-    """Decorator for logging trade execution functions."""
-    def wrapper(*args, **kwargs):
-        with log_operation(f"trade_execution_{func.__name__}", "order_manager"):
-            return func(*args, **kwargs)
-    return wrapper
+    """Decorator for logging trade execution functions.
+
+    Supports both sync and async functions without blocking the event loop.
+    """
+    import asyncio
+    import functools
+
+    if asyncio.iscoroutinefunction(func):
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            with log_operation(f"trade_execution_{func.__name__}", "order_manager"):
+                return await func(*args, **kwargs)
+        return async_wrapper
+    else:
+        @functools.wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            with log_operation(f"trade_execution_{func.__name__}", "order_manager"):
+                return func(*args, **kwargs)
+        return sync_wrapper
 
 def log_signal_processing(func):
-    """Decorator for logging signal processing functions."""
-    def wrapper(*args, **kwargs):
-        with log_operation(f"signal_processing_{func.__name__}", "strategy"):
-            return func(*args, **kwargs)  
-    return wrapper
+    """Decorator for logging signal processing functions.
+
+    Works with both async and sync functions.
+    """
+    import asyncio
+    import functools
+
+    if asyncio.iscoroutinefunction(func):
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            with log_operation(f"signal_processing_{func.__name__}", "strategy"):
+                return await func(*args, **kwargs)
+        return async_wrapper
+    else:
+        @functools.wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            with log_operation(f"signal_processing_{func.__name__}", "strategy"):
+                return func(*args, **kwargs)
+        return sync_wrapper
 
 def log_data_fetch(func):
-    """Decorator for logging data fetching operations."""
-    def wrapper(*args, **kwargs):
-        with log_operation(f"data_fetch_{func.__name__}", "data_fetcher"):
-            return func(*args, **kwargs)
-    return wrapper
+    """Decorator for logging data fetching operations.
+
+    Supports async and sync functions.
+    """
+    import asyncio
+    import functools
+
+    if asyncio.iscoroutinefunction(func):
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            with log_operation(f"data_fetch_{func.__name__}", "data_fetcher"):
+                return await func(*args, **kwargs)
+        return async_wrapper
+    else:
+        @functools.wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            with log_operation(f"data_fetch_{func.__name__}", "data_fetcher"):
+                return func(*args, **kwargs)
+        return sync_wrapper

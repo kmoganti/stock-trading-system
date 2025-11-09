@@ -1,6 +1,7 @@
 from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime, timedelta
 import logging
+import asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 from .data_fetcher import DataFetcher
 from .watchlist import WatchlistService
@@ -550,7 +551,8 @@ class StrategyService:
             # Calculate indicators
             if HAS_PANDAS:
                 df = pd.DataFrame(data)
-                indicators = self.calculate_indicators(df)
+                # Offload heavy indicator computation to a worker thread to avoid blocking the event loop
+                indicators = await asyncio.to_thread(self.calculate_indicators, df)
             else:
                 indicators = self._calculate_basic_indicators(data)
             
@@ -617,7 +619,8 @@ class StrategyService:
 
             if HAS_PANDAS:
                 df = pd.DataFrame(data)
-                indicators = self.calculate_indicators(df)
+                # Offload heavy indicator computation to a worker thread to avoid blocking the event loop
+                indicators = await asyncio.to_thread(self.calculate_indicators, df)
             else:
                 indicators = self._calculate_basic_indicators(data)
 
@@ -701,7 +704,8 @@ class StrategyService:
                 
             if HAS_PANDAS:
                 df = pd.DataFrame(historical_data)
-                indicators = self.calculate_indicators(df)
+                # Offload heavy indicator computation to a worker thread to avoid blocking the event loop
+                indicators = await asyncio.to_thread(self.calculate_indicators, df)
                 signal = self._momentum_strategy(indicators, symbol)
             else:
                 indicators = self._calculate_basic_indicators(historical_data)

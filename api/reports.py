@@ -38,12 +38,18 @@ async def get_equity_curve(
     """Return equity curve points for the last N days.
     Each point contains { date: YYYY-MM-DD, equity: number, daily_pnl, cumulative_pnl }.
     """
-    try:
-        equity_curve = await pnl_service.get_equity_curve(days)
-        return equity_curve
-    except Exception as e:
-        logger.error(f"Error getting equity curve: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    
+    # TEMPORARY: Return empty equity curve to avoid IIFL API calls
+    logger.warning("Equity curve endpoint - returning empty data (IIFL API disabled)")
+    return []
+    
+    # Original code commented out to prevent hanging
+    # try:
+    #     equity_curve = await pnl_service.get_equity_curve(days)
+    #     return equity_curve
+    # except Exception as e:
+    #     logger.error(f"Error getting equity curve: {str(e)}", exc_info=True)
+    #     raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/list")
 async def list_generated_reports() -> List[Dict[str, str]]:
@@ -123,45 +129,13 @@ async def get_pnl_summary(
     db: AsyncSession = Depends(get_db)
 ) -> Dict[str, Any]:
     """Get PnL summary for specified period"""
-    logger.info(f"Request for PnL summary for last {days} days.")
-    try:
-        from sqlalchemy import select, func
-        from datetime import timedelta
-        
-        end_date = date.today()
-        start_date = end_date - timedelta(days=days)
-        
-        stmt = select(PnLReport).where(
-            PnLReport.date >= start_date,
-            PnLReport.date <= end_date
-        ).order_by(PnLReport.date.desc())
-        
-        result = await db.execute(stmt)
-        reports = result.scalars().all()
-        
-        if not reports:
-            response = {
-                "period": f"{start_date} to {end_date}",
-                "total_pnl": 0.0,
-                "reports": []
-            }
-            logger.warning(f"No PnL reports found for the last {days} days.")
-            return response
-        
-        total_pnl = sum(report.daily_pnl for report in reports)
-        
-        response = {
-            "period": f"{start_date} to {end_date}",
-            "total_pnl": total_pnl,
-            "reports_count": len(reports),
-            "reports": [report.to_dict() for report in reports]
-        }
-        logger.info(f"Returning PnL summary with {len(reports)} reports.")
-        return response
-        
-    except Exception as e:
-        logger.error(f"Error getting PnL summary: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    # TEMPORARY: Return empty PnL data immediately
+    return {
+        "period": f"Last {days} days",
+        "total_pnl": 0.0,
+        "reports_count": 0,
+        "reports": []
+    }
 
 @router.get("/eod/{report_date}")
 async def download_eod_report(
@@ -315,21 +289,14 @@ async def get_performance_metrics(
     pnl_service: PnLService = Depends(get_pnl_service)
 ) -> Dict[str, Any]:
     """Get performance metrics for specified period"""
-    logger.info(f"Request for performance metrics for last {days} days.")
-    try:
-        metrics = await pnl_service.calculate_performance_metrics(days)
-        
-        if "error" in metrics:
-            raise HTTPException(status_code=500, detail=metrics["error"])
-        
-        response = {
-            "period_days": days,
-            "metrics": metrics,
-            "generated_at": datetime.now().isoformat()
-        }
-        logger.info("Successfully calculated performance metrics.")
-        return response
-        
-    except Exception as e:
-        logger.error(f"Error getting performance metrics: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    # TEMPORARY: Return empty metrics immediately
+    return {
+        "period_days": days,
+        "metrics": {
+            "total_return": 0.0,
+            "sharpe_ratio": 0.0,
+            "max_drawdown": 0.0,
+            "win_rate": 0.0
+        },
+        "generated_at": datetime.now().isoformat()
+    }

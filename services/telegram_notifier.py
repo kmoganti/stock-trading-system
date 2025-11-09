@@ -34,12 +34,14 @@ class TelegramNotifier:
         if not self._enabled or not self._bot:
             return
         try:
+            logger.info("Sending Telegram notification...")
             await self._bot.send_message(
                 chat_id=self.settings.telegram_chat_id,
                 text=text,
                 parse_mode=parse_mode,
             )
+            logger.info("Telegram notification sent")
         except Exception as e:
             # Fail silently to avoid impacting main workflows
-            logger.debug(f"Telegram notifier send failed: {e}")
+            logger.warning(f"Telegram notifier send failed: {e}")
 

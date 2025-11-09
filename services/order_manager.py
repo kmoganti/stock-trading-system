@@ -1,6 +1,6 @@
 import asyncio
 from typing import Dict, List, Optional, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
@@ -30,7 +30,8 @@ class OrderManager:
         """Create a new trading signal in the database"""
         try:
             # Calculate expiry time
-            expiry_time = datetime.now() + timedelta(seconds=self.settings.signal_timeout)
+            # Use UTC to avoid timezone drift; serialization adds Z suffix
+            expiry_time = datetime.now(timezone.utc) + timedelta(seconds=self.settings.signal_timeout)
             
             # Normalize incoming signal_data: ensure entry_price exists (fallback to price)
             if 'entry_price' not in signal_data or signal_data.get('entry_price') is None:
@@ -47,18 +48,35 @@ class OrderManager:
                     # leave as-is; risk/other services accept string too
                     pass
 
-            # Calculate required margin
-            position_size = await self.risk.calculate_position_size(
-                signal_data, 
-                await self._get_available_capital()
-            )
-            
-            required_margin_info = await self.data_fetcher.calculate_required_margin(
-                signal_data['symbol'],
-                position_size,
-                signal_data['signal_type'].value if hasattr(signal_data.get('signal_type'), 'value') else signal_data.get('signal_type'),
-                signal_data['entry_price']
-            )
+            # Calculate required margin with strict time budgets to avoid blocking the event loop
+            try:
+                available_capital = await asyncio.wait_for(self._get_available_capital(), timeout=3.0)
+            except asyncio.TimeoutError:
+                logger.warning("Timeout getting available capital; defaulting to 0.0")
+                available_capital = 0.0
+
+            try:
+                position_size = await asyncio.wait_for(
+                    self.risk.calculate_position_size(signal_data, available_capital),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Timeout calculating position size; defaulting to size=1")
+                position_size = 1
+
+            try:
+                required_margin_info = await asyncio.wait_for(
+                    self.data_fetcher.calculate_required_margin(
+                        signal_data['symbol'],
+                        position_size,
+                        signal_data['signal_type'].value if hasattr(signal_data.get('signal_type'), 'value') else signal_data.get('signal_type'),
+                        signal_data['entry_price']
+                    ),
+                    timeout=6.0
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Timeout calculating required margin; proceeding with margin=0.0 for persistence")
+                required_margin_info = 0.0
             # Normalize required margin to a float value
             if isinstance(required_margin_info, dict):
                 required_margin_value = float(
@@ -109,7 +127,7 @@ class OrderManager:
         """Process a signal - either execute automatically or queue for approval"""
         try:
             # Check if signal has expired
-            if datetime.now() > signal.expiry_time:
+            if datetime.now(timezone.utc) > signal.expiry_time:
                 await self._expire_signal(signal)
                 return False
             
@@ -148,7 +166,7 @@ class OrderManager:
                 return {"success": False, "message": f"Signal status is {signal.status.value}, cannot approve"}
             
             # Check if expired
-            if datetime.now() > signal.expiry_time:
+            if datetime.now(timezone.utc) > signal.expiry_time:
                 await self._expire_signal(signal)
                 return {"success": False, "message": "Signal has expired"}
             
@@ -208,9 +226,9 @@ class OrderManager:
         try:
             # In dry-run or non-production, simulate order execution without hitting broker API
             if getattr(self.settings, "dry_run", False) or self.settings.environment != "production":
-                simulated_order_id = f"DRYRUN-{int(datetime.now().timestamp())}-{signal.id}"
+                simulated_order_id = f"DRYRUN-{int(datetime.now(timezone.utc).timestamp())}-{signal.id}"
                 signal.status = SignalStatus.EXECUTED
-                signal.executed_at = datetime.now()
+                signal.executed_at = datetime.now(timezone.utc)
                 signal.order_id = simulated_order_id
             if self.db:
                 await self.db.commit()
@@ -253,7 +271,7 @@ class OrderManager:
                 if order_id:
                     # Update signal with order details
                     signal.status = SignalStatus.EXECUTED
-                    signal.executed_at = datetime.now()
+                    signal.executed_at = datetime.now(timezone.utc)
                     signal.order_id = order_id
                     
                     if self.db:
@@ -263,7 +281,7 @@ class OrderManager:
                     self.pending_orders[order_id] = {
                         "signal_id": signal.id,
                         "symbol": signal.symbol,
-                        "order_time": datetime.now()
+                        "order_time": datetime.now(timezone.utc)
                     }
                     
                     # After a successful order, refresh caches once to reflect latest positions/margin
@@ -316,7 +334,7 @@ class OrderManager:
     async def check_expired_signals(self):
         """Check and expire old signals"""
         try:
-            current_time = datetime.now()
+            current_time = datetime.now(timezone.utc)
             stmt = select(Signal).where(
                 Signal.status == SignalStatus.PENDING,
                 Signal.expiry_time <= current_time

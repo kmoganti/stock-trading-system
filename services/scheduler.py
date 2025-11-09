@@ -134,13 +134,12 @@ class TradingScheduler:
         }
     
     async def initialize_services(self):
-        """Initialize trading services"""
+        """Initialize trading services with timeout protection"""
         try:
-            self.iifl_api = IIFLAPIService()
-            self.data_fetcher = DataFetcher(self.iifl_api)
-            self.strategy_service = StrategyService(self.data_fetcher)
+            # Initialize with timeout to prevent hanging
+            logger.info("Initializing trading services for scheduler...")
             
-            # Initialize running job tracking
+            # Initialize running job tracking first (doesn't require IIFL)
             for strategy_type in StrategyType:
                 self.running_jobs[strategy_type] = False
                 self.execution_stats[strategy_type] = {
@@ -153,11 +152,35 @@ class TradingScheduler:
                     'last_error': None
                 }
             
-            logger.info("Trading services initialized successfully")
+            # Initialize IIFL API with timeout protection (15 seconds)
+            try:
+                async def init_iifl_services():
+                    """Initialize IIFL services"""
+                    self.iifl_api = IIFLAPIService()
+                    self.data_fetcher = DataFetcher(self.iifl_api)
+                    self.strategy_service = StrategyService(self.data_fetcher)
+                
+                await asyncio.wait_for(
+                    init_iifl_services(),
+                    timeout=15.0
+                )
+                logger.info("✅ Trading services initialized successfully")
+            except asyncio.TimeoutError:
+                logger.warning("⏱️ IIFL API initialization timed out - services will be initialized on first job run")
+                # Set to None so jobs can reinitialize if needed
+                self.iifl_api = None
+                self.data_fetcher = None
+                self.strategy_service = None
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to initialize IIFL services: {e} - services will be initialized on first job run")
+                self.iifl_api = None
+                self.data_fetcher = None
+                self.strategy_service = None
             
         except Exception as e:
             logger.error(f"Failed to initialize trading services: {e}")
-            raise
+            # Don't raise - allow scheduler to start without services
+            logger.warning("Scheduler will start but services are not initialized")
     
     def is_market_day(self, date: datetime) -> bool:
         """Check if given date is a trading day (excludes weekends and holidays)"""
@@ -180,17 +203,48 @@ class TradingScheduler:
         # Check market hours
         return config.market_start_time <= current_time_only <= config.market_end_time
     
+    async def _ensure_services_initialized(self):
+        """Ensure services are initialized before running jobs"""
+        if self.strategy_service is None:
+            logger.info("Services not initialized, initializing now...")
+            try:
+                self.iifl_api = IIFLAPIService()
+                self.data_fetcher = DataFetcher(self.iifl_api)
+                self.strategy_service = StrategyService(self.data_fetcher)
+                logger.info("✅ Services initialized successfully")
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize services: {e}")
+                raise RuntimeError("Cannot execute job: services not available")
+        return True
+    
     async def execute_day_trading_strategy(self):
         """Execute day trading strategy - high frequency gap and breakout analysis"""
         strategy_type = StrategyType.DAY_TRADING
+        config = self.schedule_configs[strategy_type]
         
         if self.running_jobs[strategy_type]:
             logger.warning("Day trading strategy already running, skipping execution")
             return
         
+        start_time = datetime.now()
+        
         try:
             self.running_jobs[strategy_type] = True
-            start_time = datetime.now()
+            
+            # Check if services are initialized
+            try:
+                await asyncio.wait_for(
+                    self._ensure_services_initialized(),
+                    timeout=10.0
+                )
+            except asyncio.TimeoutError:
+                logger.error("⏱️ Service initialization timed out for day trading")
+                self._update_execution_stats(strategy_type, False, 0, "Service initialization timeout")
+                return
+            except Exception as e:
+                logger.error(f"❌ Service initialization failed: {e}")
+                self._update_execution_stats(strategy_type, False, 0, str(e))
+                return
             
             logger.info("🚀 Executing day trading strategy...")
             
@@ -202,21 +256,38 @@ class TradingScheduler:
             
             signals_generated = []
             
-            for symbol in symbols:
-                try:
-                    # Generate day trading signals
-                    signals = await self.strategy_service.generate_signals(
-                        symbol, 
-                        category="day_trading",
-                        strategy_name=None  # Use all day trading strategies
-                    )
-                    
-                    if signals:
-                        signals_generated.extend(signals)
-                        logger.info(f"📈 Day trading signals for {symbol}: {len(signals)} signals")
+            # Execute with overall timeout
+            try:
+                async def generate_all_signals():
+                    for symbol in symbols:
+                        try:
+                            # Generate day trading signals with timeout per symbol
+                            signals = await asyncio.wait_for(
+                                self.strategy_service.generate_signals(
+                                    symbol, 
+                                    category="day_trading",
+                                    strategy_name=None
+                                ),
+                                timeout=30.0  # 30 seconds per symbol
+                            )
+                            
+                            if signals:
+                                signals_generated.extend(signals)
+                                logger.info(f"📈 Day trading signals for {symbol}: {len(signals)} signals")
+                        
+                        except asyncio.TimeoutError:
+                            logger.warning(f"⏱️ Timeout generating day trading signals for {symbol}")
+                        except Exception as e:
+                            logger.error(f"Error generating day trading signals for {symbol}: {e}")
                 
-                except Exception as e:
-                    logger.error(f"Error generating day trading signals for {symbol}: {e}")
+                # Execute all with overall timeout (config timeout in minutes)
+                await asyncio.wait_for(
+                    generate_all_signals(),
+                    timeout=config.timeout_minutes * 60
+                )
+                
+            except asyncio.TimeoutError:
+                logger.error(f"⏱️ Day trading strategy execution exceeded {config.timeout_minutes} minute timeout")
             
             # Log execution results
             execution_time = (datetime.now() - start_time).total_seconds()
@@ -225,7 +296,7 @@ class TradingScheduler:
             logger.info(f"✅ Day trading strategy completed: {len(signals_generated)} signals in {execution_time:.2f}s")
             
         except Exception as e:
-            execution_time = (datetime.now() - start_time).total_seconds() if 'start_time' in locals() else 0
+            execution_time = (datetime.now() - start_time).total_seconds()
             self._update_execution_stats(strategy_type, False, execution_time, str(e))
             logger.error(f"❌ Day trading strategy failed: {e}")
             
@@ -235,14 +306,28 @@ class TradingScheduler:
     async def execute_short_selling_strategy(self):
         """Execute short selling strategy - monitor overbought conditions"""
         strategy_type = StrategyType.SHORT_SELLING
+        config = self.schedule_configs[strategy_type]
         
         if self.running_jobs[strategy_type]:
             logger.warning("Short selling strategy already running, skipping execution")
             return
         
+        start_time = datetime.now()
+        
         try:
             self.running_jobs[strategy_type] = True
-            start_time = datetime.now()
+            
+            # Check if services are initialized
+            try:
+                await asyncio.wait_for(
+                    self._ensure_services_initialized(),
+                    timeout=10.0
+                )
+            except (asyncio.TimeoutError, Exception) as e:
+                error_msg = "Service initialization timeout" if isinstance(e, asyncio.TimeoutError) else str(e)
+                logger.error(f"❌ Service initialization failed for short selling: {error_msg}")
+                self._update_execution_stats(strategy_type, False, 0, error_msg)
+                return
             
             logger.info("🔴 Executing short selling strategy...")
             
@@ -254,19 +339,35 @@ class TradingScheduler:
             
             short_signals = []
             
-            # Use the specialized short selling analyzer
-            from short_selling_daytrading_backtest import ShortSellingDayTradingAnalyzer
-            analyzer = ShortSellingDayTradingAnalyzer()
-            
-            for symbol in symbols[:5]:  # Limit to 5 for frequent execution
-                try:
-                    analysis = await analyzer.analyze_symbol(symbol)
-                    if analysis.get('short_selling_signals'):
-                        short_signals.extend(analysis['short_selling_signals'])
-                        logger.info(f"🔻 Short selling signals for {symbol}: {len(analysis['short_selling_signals'])} signals")
+            # Execute with timeout protection
+            try:
+                # Use the specialized short selling analyzer
+                from short_selling_daytrading_backtest import ShortSellingDayTradingAnalyzer
+                analyzer = ShortSellingDayTradingAnalyzer()
                 
-                except Exception as e:
-                    logger.error(f"Error analyzing short selling for {symbol}: {e}")
+                async def analyze_all_symbols():
+                    for symbol in symbols[:5]:  # Limit to 5 for frequent execution
+                        try:
+                            analysis = await asyncio.wait_for(
+                                analyzer.analyze_symbol(symbol),
+                                timeout=60.0  # 60 seconds per symbol
+                            )
+                            if analysis.get('short_selling_signals'):
+                                short_signals.extend(analysis['short_selling_signals'])
+                                logger.info(f"🔻 Short selling signals for {symbol}: {len(analysis['short_selling_signals'])} signals")
+                        
+                        except asyncio.TimeoutError:
+                            logger.warning(f"⏱️ Timeout analyzing short selling for {symbol}")
+                        except Exception as e:
+                            logger.error(f"Error analyzing short selling for {symbol}: {e}")
+                
+                await asyncio.wait_for(
+                    analyze_all_symbols(),
+                    timeout=config.timeout_minutes * 60
+                )
+                
+            except asyncio.TimeoutError:
+                logger.error(f"⏱️ Short selling strategy exceeded {config.timeout_minutes} minute timeout")
             
             execution_time = (datetime.now() - start_time).total_seconds()
             self._update_execution_stats(strategy_type, True, execution_time)
@@ -274,7 +375,7 @@ class TradingScheduler:
             logger.info(f"✅ Short selling strategy completed: {len(short_signals)} signals in {execution_time:.2f}s")
             
         except Exception as e:
-            execution_time = (datetime.now() - start_time).total_seconds() if 'start_time' in locals() else 0
+            execution_time = (datetime.now() - start_time).total_seconds()
             self._update_execution_stats(strategy_type, False, execution_time, str(e))
             logger.error(f"❌ Short selling strategy failed: {e}")
             
@@ -284,14 +385,28 @@ class TradingScheduler:
     async def execute_short_term_strategy(self):
         """Execute short term strategy - swing trading signals"""
         strategy_type = StrategyType.SHORT_TERM
+        config = self.schedule_configs[strategy_type]
         
         if self.running_jobs[strategy_type]:
             logger.warning("Short term strategy already running, skipping execution")
             return
         
+        start_time = datetime.now()
+        
         try:
             self.running_jobs[strategy_type] = True
-            start_time = datetime.now()
+            
+            # Check if services are initialized
+            try:
+                await asyncio.wait_for(
+                    self._ensure_services_initialized(),
+                    timeout=10.0
+                )
+            except (asyncio.TimeoutError, Exception) as e:
+                error_msg = "Service initialization timeout" if isinstance(e, asyncio.TimeoutError) else str(e)
+                logger.error(f"❌ Service initialization failed for short term: {error_msg}")
+                self._update_execution_stats(strategy_type, False, 0, error_msg)
+                return
             
             logger.info("📈 Executing short term strategy...")
             
@@ -304,20 +419,35 @@ class TradingScheduler:
             
             signals_generated = []
             
-            for symbol in symbols:
-                try:
-                    signals = await self.strategy_service.generate_signals(
-                        symbol, 
-                        category="short_term",
-                        strategy_name=None
-                    )
-                    
-                    if signals:
-                        signals_generated.extend(signals)
-                        logger.info(f"📊 Short term signals for {symbol}: {len(signals)} signals")
+            try:
+                async def generate_all_signals():
+                    for symbol in symbols:
+                        try:
+                            signals = await asyncio.wait_for(
+                                self.strategy_service.generate_signals(
+                                    symbol, 
+                                    category="short_term",
+                                    strategy_name=None
+                                ),
+                                timeout=45.0  # 45 seconds per symbol
+                            )
+                            
+                            if signals:
+                                signals_generated.extend(signals)
+                                logger.info(f"📊 Short term signals for {symbol}: {len(signals)} signals")
+                        
+                        except asyncio.TimeoutError:
+                            logger.warning(f"⏱️ Timeout generating short term signals for {symbol}")
+                        except Exception as e:
+                            logger.error(f"Error generating short term signals for {symbol}: {e}")
                 
-                except Exception as e:
-                    logger.error(f"Error generating short term signals for {symbol}: {e}")
+                await asyncio.wait_for(
+                    generate_all_signals(),
+                    timeout=config.timeout_minutes * 60
+                )
+                
+            except asyncio.TimeoutError:
+                logger.error(f"⏱️ Short term strategy exceeded {config.timeout_minutes} minute timeout")
             
             execution_time = (datetime.now() - start_time).total_seconds()
             self._update_execution_stats(strategy_type, True, execution_time)
@@ -325,7 +455,7 @@ class TradingScheduler:
             logger.info(f"✅ Short term strategy completed: {len(signals_generated)} signals in {execution_time:.2f}s")
             
         except Exception as e:
-            execution_time = (datetime.now() - start_time).total_seconds() if 'start_time' in locals() else 0
+            execution_time = (datetime.now() - start_time).total_seconds()
             self._update_execution_stats(strategy_type, False, execution_time, str(e))
             logger.error(f"❌ Short term strategy failed: {e}")
             
@@ -335,14 +465,28 @@ class TradingScheduler:
     async def execute_long_term_strategy(self):
         """Execute long term strategy - comprehensive daily analysis"""
         strategy_type = StrategyType.LONG_TERM
+        config = self.schedule_configs[strategy_type]
         
         if self.running_jobs[strategy_type]:
             logger.warning("Long term strategy already running, skipping execution")
             return
         
+        start_time = datetime.now()
+        
         try:
             self.running_jobs[strategy_type] = True
-            start_time = datetime.now()
+            
+            # Check if services are initialized
+            try:
+                await asyncio.wait_for(
+                    self._ensure_services_initialized(),
+                    timeout=10.0
+                )
+            except (asyncio.TimeoutError, Exception) as e:
+                error_msg = "Service initialization timeout" if isinstance(e, asyncio.TimeoutError) else str(e)
+                logger.error(f"❌ Service initialization failed for long term: {error_msg}")
+                self._update_execution_stats(strategy_type, False, 0, error_msg)
+                return
             
             logger.info("📈 Executing long term strategy...")
             
@@ -356,20 +500,35 @@ class TradingScheduler:
             
             signals_generated = []
             
-            for symbol in symbols:
-                try:
-                    signals = await self.strategy_service.generate_signals(
-                        symbol, 
-                        category="long_term",
-                        strategy_name=None
-                    )
-                    
-                    if signals:
-                        signals_generated.extend(signals)
-                        logger.info(f"📈 Long term signals for {symbol}: {len(signals)} signals")
+            try:
+                async def generate_all_signals():
+                    for symbol in symbols:
+                        try:
+                            signals = await asyncio.wait_for(
+                                self.strategy_service.generate_signals(
+                                    symbol, 
+                                    category="long_term",
+                                    strategy_name=None
+                                ),
+                                timeout=60.0  # 60 seconds per symbol
+                            )
+                            
+                            if signals:
+                                signals_generated.extend(signals)
+                                logger.info(f"📈 Long term signals for {symbol}: {len(signals)} signals")
+                        
+                        except asyncio.TimeoutError:
+                            logger.warning(f"⏱️ Timeout generating long term signals for {symbol}")
+                        except Exception as e:
+                            logger.error(f"Error generating long term signals for {symbol}: {e}")
                 
-                except Exception as e:
-                    logger.error(f"Error generating long term signals for {symbol}: {e}")
+                await asyncio.wait_for(
+                    generate_all_signals(),
+                    timeout=config.timeout_minutes * 60
+                )
+                
+            except asyncio.TimeoutError:
+                logger.error(f"⏱️ Long term strategy exceeded {config.timeout_minutes} minute timeout")
             
             execution_time = (datetime.now() - start_time).total_seconds()
             self._update_execution_stats(strategy_type, True, execution_time)
@@ -377,7 +536,7 @@ class TradingScheduler:
             logger.info(f"✅ Long term strategy completed: {len(signals_generated)} signals in {execution_time:.2f}s")
             
         except Exception as e:
-            execution_time = (datetime.now() - start_time).total_seconds() if 'start_time' in locals() else 0
+            execution_time = (datetime.now() - start_time).total_seconds()
             self._update_execution_stats(strategy_type, False, execution_time, str(e))
             logger.error(f"❌ Long term strategy failed: {e}")
             

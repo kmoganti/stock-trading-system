@@ -133,7 +133,11 @@ class RiskService:
             if not self.data_fetcher:
                 return True  # Pass check in test mode
                 
-            margin_info = await self.data_fetcher.get_margin_info()
+            try:
+                margin_info = await asyncio.wait_for(self.data_fetcher.get_margin_info(), timeout=6.0)
+            except asyncio.TimeoutError:
+                logger.warning("Timeout fetching margin info in risk check")
+                margin_info = None
             
             if not margin_info:
                 await self._log_risk_event(
@@ -209,9 +213,16 @@ class RiskService:
 
             # Calculate required margin (API may return dict or numeric)
             if self.data_fetcher:
-                raw_required_margin = await self.data_fetcher.calculate_required_margin(
-                    symbol, position_size, signal_type_value, entry_price
-                )
+                try:
+                    raw_required_margin = await asyncio.wait_for(
+                        self.data_fetcher.calculate_required_margin(
+                            symbol, position_size, signal_type_value, entry_price
+                        ),
+                        timeout=6.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("Timeout during required margin calculation in risk validation")
+                    raw_required_margin = None
             else:
                 # For tests without data_fetcher
                 raw_required_margin = 0.0
@@ -323,9 +334,16 @@ class RiskService:
                         signal_type_value = raw_signal_type
 
                     # Check if position size fits within margin limits
-                    raw_required_margin2 = await self.data_fetcher.calculate_required_margin(
-                        symbol, position_size, signal_type_value, entry_price
-                    )
+                    try:
+                        raw_required_margin2 = await asyncio.wait_for(
+                            self.data_fetcher.calculate_required_margin(
+                                symbol, position_size, signal_type_value, entry_price
+                            ),
+                            timeout=6.0
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning("Timeout during required margin calc while sizing; keeping current size")
+                        raw_required_margin2 = None
                     req_margin_val = 0.0
                     if isinstance(raw_required_margin2, dict):
                         req_margin_val = float(

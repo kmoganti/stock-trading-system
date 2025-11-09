@@ -119,9 +119,11 @@
                         const response = await fetch('/api/system/status');
                         const data = await response.json();
                         this.autoTrade = data.auto_trade || false;
-                        this.apiConnected = data.iifl_api_connected || false;
+                        // Handle null (not checked) vs false (checked but failed)
+                        this.apiConnected = data.iifl_api_connected === true;
                     } catch (error) {
                         console.error('Error fetching system status:', error);
+                        this.apiConnected = false;
                     }
                 }
             }));

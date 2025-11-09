@@ -83,6 +83,7 @@
                             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">SL/TP</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Margin</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Generated</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Expiry</th>
                             <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                         </tr>
@@ -112,6 +113,9 @@
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900" x-text="formatCurrency(signal.margin_required)"></td>
                                 <td class="px-6 py-4 whitespace-nowrap">
                                     <span class="status-badge" :class="getStatusClass(signal.status)" x-text="signal.status.toUpperCase()"></span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                    <div x-text="formatDateTime(signal.created_at)"></div>
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                                     <div x-show="signal.status === 'pending'" x-text="getTimeRemaining(signal.expiry_time)"></div>
@@ -325,6 +329,13 @@
                             <div class="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600 mr-3"></div>
                             <div>
                                 <p class="text-sm font-medium text-blue-800" x-text="generationStatus"></p>
+                                <template x-if="progressState.current_symbol">
+                                    <p class="text-xs text-blue-700 mt-1">
+                                        <span>Analyzing: </span>
+                                        <span class="font-semibold" x-text="progressState.current_symbol"></span>
+                                        <span class="ml-2" x-text="`(${progressState.processed || 0}/${progressState.total || 0})`"></span>
+                                    </p>
+                                </template>
                                 <div x-show="generationProgress > 0" class="w-full bg-blue-200 rounded-full h-2 mt-2">
                                     <div class="bg-blue-600 h-2 rounded-full transition-all duration-300" 
                                          :style="`width: ${generationProgress}%`"></div>
@@ -475,6 +486,8 @@ document.addEventListener('alpine:init', () => {
         generationInProgress: false,
         generationStatus: '',
         generationProgress: 0,
+        progressState: { in_progress: false, current_symbol: null, processed: 0, total: 0, percentage: 0, phase: null },
+        progressTimer: null,
         generationStats: {
             lastRun: null,
             signalsGenerated: 0,
@@ -513,6 +526,70 @@ document.addEventListener('alpine:init', () => {
             await this.loadSignals();
             // Refresh every 15 seconds
             setInterval(() => this.loadSignals(), 15000);
+        },
+        startProgressPolling() {
+            this.stopProgressPolling();
+            // Prefer SSE if supported
+            if (!!window.EventSource) {
+                try {
+                    this._evtSource = new EventSource('/api/signals/progress/stream');
+                    this._evtSource.onmessage = (e) => {
+                        try {
+                            const state = JSON.parse(e.data);
+                            this.progressState = state || {};
+                            if (state.in_progress) {
+                                this.generationProgress = state.percentage || 0;
+                                const phase = state.phase ? ` (${state.phase})` : '';
+                                this.generationStatus = `Generating signals${phase}...`;
+                            } else {
+                                // no task; if UI still showing spinner, let completion logic stop it
+                                this.generationProgress = this.generationProgress || (state.percentage || 100);
+                            }
+                        } catch (_) {}
+                    };
+                    this._evtSource.onerror = () => {
+                        // fallback to polling if SSE errors out
+                        this._evtSource && this._evtSource.close();
+                        this._evtSource = null;
+                        this._startPollingFallback();
+                    };
+                    return;
+                } catch (_) {
+                    // ignore and fallback to polling
+                }
+            }
+            this._startPollingFallback();
+        },
+        stopProgressPolling() {
+            if (this.progressTimer) {
+                clearInterval(this.progressTimer);
+                this.progressTimer = null;
+            }
+            if (this._evtSource) {
+                try { this._evtSource.close(); } catch (_) {}
+                this._evtSource = null;
+            }
+        },
+        _startPollingFallback() {
+            const poll = async () => {
+                try {
+                    const res = await fetch('/api/signals/progress');
+                    if (!res.ok) return;
+                    const state = await res.json();
+                    this.progressState = state || {};
+                    if (state.in_progress) {
+                        this.generationProgress = state.percentage || 0;
+                        const phase = state.phase ? ` (${state.phase})` : '';
+                        this.generationStatus = `Generating signals${phase}...`;
+                    } else {
+                        this.generationProgress = this.generationProgress || (state.percentage || 100);
+                    }
+                } catch (e) {
+                    // Ignore transient errors
+                }
+            };
+            poll();
+            this.progressTimer = setInterval(poll, 1000);
         },
         
         async loadSignals() {
@@ -618,6 +695,7 @@ document.addEventListener('alpine:init', () => {
             this.generationInProgress = true;
             this.generationProgress = 0;
             this.generationStatus = 'Initializing signal generation...';
+            this.startProgressPolling();
 
             try {
                 let endpoint = '';
@@ -711,6 +789,8 @@ document.addEventListener('alpine:init', () => {
                     setTimeout(() => {
                         this.showGenerateModal = false;
                         this.generationInProgress = false;
+                        this.stopProgressPolling();
+                        this.progressState = { in_progress: false, current_symbol: null, processed: 0, total: 0, percentage: 0, phase: null };
                     }, 2000);
                 } else {
                     throw new Error(result.detail || result.message || 'Failed to generate signals');
@@ -722,6 +802,8 @@ document.addEventListener('alpine:init', () => {
                 this.generationInProgress = false;
                 this.generationProgress = 0;
                 this.generationStatus = '';
+                this.stopProgressPolling();
+                this.progressState = { in_progress: false, current_symbol: null, processed: 0, total: 0, percentage: 0, phase: null };
             }
         },
 

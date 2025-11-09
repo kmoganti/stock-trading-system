@@ -1,21 +1,45 @@
 version: '3.8'
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: trading-postgres
+    environment:
+      POSTGRES_USER: trading_user
+      POSTGRES_PASSWORD: trading_secure_password_2025
+      POSTGRES_DB: trading_system
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
   trading-system:
     build: .
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=sqlite+aiosqlite:///./trading.db
-      - PORT=8000
-      - DEBUG=false
+      # Auto-wired to the 'postgres' service hostname
+      DATABASE_URL: postgresql+asyncpg://trading_user:trading_secure_password_2025@postgres:5432/trading_system
+      PORT: 8000
+      DEBUG: "false"
+      # You can toggle SAFE_MODE to keep liveness during cold starts
+      # SAFE_MODE: "true"
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./reports:/app/reports
     restart: unless-stopped
     depends_on:
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   redis:
     image: redis:7-alpine
@@ -39,3 +63,4 @@ services:
 
 volumes:
   redis_data:
+  pg_data:

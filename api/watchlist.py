@@ -22,10 +22,12 @@ async def get_watchlist(
     """Get all symbols in the watchlist"""
     try:
         service = WatchlistService(db)
-        return await service.get_watchlist(active_only=active_only, category=category)
+        symbols = await service.get_watchlist(active_only=active_only, category=category)
+        return symbols
     except Exception as e:
         logger.error(f"Error getting watchlist: {str(e)}")
-        raise HTTPException(status_code=500, detail="Error retrieving watchlist")
+        # Return empty list on error instead of raising exception
+        return []
 
 @router.post("")
 async def add_to_watchlist(

@@ -51,36 +51,40 @@ class TradingLogger:
         self._telegram_notify = None
     
     def _setup_fallback_logger(self, name: str, filename: str, level: int = logging.INFO) -> logging.Logger:
-        """Setup individual logger with rotating file handler"""
+        """Setup individual logger with rotating file handler (compact, low-overhead)."""
         logger = logging.getLogger(f"trading.{name}")
         logger.setLevel(level)
-        
+        logger.propagate = False  # prevent double logging to root
+
         # Remove existing handlers to avoid duplicates
         for handler in logger.handlers[:]:
             logger.removeHandler(handler)
-        
-        # File handler with rotation
+
+        # File handler with rotation (delay open until first write)
         file_handler = logging.handlers.RotatingFileHandler(
             self.log_dir / filename,
-            maxBytes=10*1024*1024,  # 10MB
-            backupCount=5
+            maxBytes=10 * 1024 * 1024,  # 10MB
+            backupCount=5,
+            delay=True,
         )
-        
-        # Console handler
+        file_handler.setLevel(level)
+
+        # Console handler (keep quieter to reduce sync I/O on stdout)
         console_handler = logging.StreamHandler()
-        
-        # Formatter
+        console_handler.setLevel(logging.WARNING)
+
+        # Formatter (compact)
         formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
-        
+
         file_handler.setFormatter(formatter)
         console_handler.setFormatter(formatter)
-        
+
         logger.addHandler(file_handler)
         logger.addHandler(console_handler)
-        
+
         return logger
 
     def enable_sentry(self):
@@ -120,6 +124,15 @@ class TradingLogger:
     def log_api_call(self, endpoint: str, method: str, status_code: int,
                      response_time: float, error: str = None, request_body: Any = None):
         """Log API calls"""
+        # Truncate large request bodies to avoid excessive logging overhead
+        body_preview: Optional[str] = None
+        if request_body is not None:
+            try:
+                body_preview = str(request_body)
+                if len(body_preview) > 500:
+                    body_preview = body_preview[:500] + "...<truncated>"
+            except Exception:
+                body_preview = "<unserializable>"
         api_data = {
             "timestamp": datetime.now().isoformat(),
             "endpoint": endpoint,
@@ -127,11 +140,11 @@ class TradingLogger:
             "status_code": status_code,
             "response_time_ms": response_time * 1000,
             "error": error,
-            "request_body": request_body
+            "request_body": body_preview
         }
         
         level = logging.ERROR if error else logging.INFO
-        self.api_logger.log(level, f"API: {json.dumps(api_data)}")
+        self.api_logger.log(level, f"API: {json.dumps(api_data, separators=(',', ':'))}")
     
     def log_error(self, component: str, error: Exception, context: Dict[str, Any] = None):
         """Log errors with full context"""
@@ -144,7 +157,13 @@ class TradingLogger:
             "context": context or {}
         }
         
-        self.error_logger.error(f"ERROR: {json.dumps(error_data, indent=2)}")
+        # Compact JSON to reduce CPU and I/O overhead
+        try:
+            payload = json.dumps(error_data, separators=(',', ':'))
+        except Exception:
+            # Fallback to minimal string if serialization fails
+            payload = f"{{'component':'{component}','error':'{type(error).__name__}:{str(error)[:200]}'}}"
+        self.error_logger.error(f"ERROR: {payload}")
         try:
             if self._sentry_enabled:
                 import sentry_sdk

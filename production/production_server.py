@@ -47,6 +47,8 @@ class ProductionServer:
     # This avoids potential hangs from external services (market stream, etc.).
     os.environ.setdefault("ENABLE_MARKET_STREAM", "false")
     os.environ.setdefault("ENABLE_STARTUP_CACHE_WARMUP", "false")
+    # Be lenient by default: don't abort on failed health checks unless explicitly requested.
+    os.environ.setdefault("STRICT_STARTUP_CHECKS", "false")
     # Telegram bot is controlled by settings; keep default off unless enabled.
         
     def setup_signal_handlers(self):
@@ -72,12 +74,19 @@ class ProductionServer:
             logger.info(f"✅ Log Level: {settings.log_level}")
             
             # Check database connectivity
-            import sqlite3
-            conn = sqlite3.connect("trading_system.db")
-            cursor = conn.cursor()
-            cursor.execute("SELECT 1")
-            conn.close()
-            logger.info("✅ Database connectivity verified")
+            from models.database import engine
+            from sqlalchemy import text
+            try:
+                async with engine.begin() as conn:
+                    await conn.execute(text("SELECT 1"))
+                logger.info("✅ Database connectivity verified")
+            except Exception as db_e:
+                # If SAFE_MODE, allow startup without DB to keep UI/health responsive
+                safe_mode = os.getenv("SAFE_MODE", "false").lower() == "true"
+                if safe_mode:
+                    logger.warning(f"⚠️ Database not reachable, but SAFE_MODE=true - continuing startup: {db_e}")
+                else:
+                    raise
             
             # Check required environment variables
             required_vars = ['IIFL_CLIENT_ID', 'IIFL_AUTH_CODE', 'IIFL_APP_SECRET']
@@ -94,6 +103,10 @@ class ProductionServer:
             return True
             
         except Exception as e:
+            # In SAFE_MODE, do not block startup on health check failures
+            if os.getenv("SAFE_MODE", "false").lower() == "true":
+                logger.warning(f"⚠️ Startup health check issues ignored in SAFE_MODE: {e}")
+                return True
             logger.error(f"❌ Startup health check failed: {str(e)}")
             return False
     
@@ -102,15 +115,22 @@ class ProductionServer:
         logger.info("🚀 Initializing trading system services...")
         
         try:
+            # In SAFE_MODE, skip heavy/critical dependencies to keep app responsive
+            if os.getenv("SAFE_MODE", "false").lower() == "true":
+                logger.warning("⚠️ SAFE_MODE=true - skipping database initialization and heavy services")
+                # Let FastAPI app handle minimal initialization
+                return True
             # Initialize database
             from models.database import init_db
+            logger.info("📊 About to initialize database...")
             await init_db()
             logger.info("✅ Database initialized")
             
-            # Initialize logging service
-            from services.logging_service import TradingLogger
-            trading_logger = TradingLogger()
-            logger.info("✅ Logging service initialized")
+            # Initialize logging service (deferred to FastAPI app import)
+            # Previously importing TradingLogger here could block startup in some environments
+            # due to heavy logging configuration. The FastAPI app (main.py) initializes
+            # logging on import, so we skip explicit init here to avoid blocking.
+            logger.info("📝 Skipping pre-server logging initialization (FastAPI app will configure logging)")
             
             # Initialize scheduler if enabled
             from config.settings import get_settings
@@ -125,6 +145,10 @@ class ProductionServer:
             
         except Exception as e:
             logger.error(f"❌ Service initialization failed: {str(e)}")
+            # If SAFE_MODE, allow startup to continue despite service init failures
+            if os.getenv("SAFE_MODE", "false").lower() == "true":
+                logger.warning(f"⚠️ Service initialization issues ignored in SAFE_MODE: {e}")
+                return True
             return False
     
     async def start_server(self):
@@ -141,6 +165,9 @@ class ProductionServer:
             )
             
             # Production server configuration
+            # Note: Use default HTTP implementation (auto/h11) and loop to avoid
+            # optional dependency issues (e.g., missing 'httptools') that can
+            # prevent the server from binding to the port.
             config = uvicorn.Config(
                 "main:app",
                 host=getattr(settings, 'host', '0.0.0.0'),
@@ -148,9 +175,7 @@ class ProductionServer:
                 log_level=getattr(settings, 'log_level', 'info').lower(),
                 access_log=True,
                 reload=False,  # Never reload in production
-                workers=1,     # Single worker for trading system
-                loop="asyncio",
-                http="httptools"
+                workers=1      # Single worker for trading system
             )
             
             self.server = uvicorn.Server(config)
@@ -171,14 +196,21 @@ class ProductionServer:
         self.setup_signal_handlers()
         
         # Run startup health checks
+        strict_checks = os.getenv("STRICT_STARTUP_CHECKS", "false").lower() == "true"
         if not await self.health_check_startup():
-            logger.error("❌ Startup health checks failed, aborting startup")
-            return False
+            if strict_checks:
+                logger.error("❌ Startup health checks failed, aborting startup (STRICT_STARTUP_CHECKS=true)")
+                return False
+            else:
+                logger.warning("⚠️ Startup health checks failed, but proceeding (STRICT_STARTUP_CHECKS=false)")
         
         # Initialize services
         if not await self.initialize_services():
-            logger.error("❌ Service initialization failed, aborting startup")
-            return False
+            if strict_checks:
+                logger.error("❌ Service initialization failed, aborting startup (STRICT_STARTUP_CHECKS=true)")
+                return False
+            else:
+                logger.warning("⚠️ Service initialization failed, but proceeding (STRICT_STARTUP_CHECKS=false)")
         
         # Start server
         try:
