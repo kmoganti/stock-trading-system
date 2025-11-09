@@ -4,6 +4,8 @@ from .database import Base
 import enum
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
+import urllib.parse
+import json
 
 class SignalType(str, enum.Enum):
     BUY = "buy"
@@ -61,7 +63,7 @@ class Signal(Base):
         return iso.replace("+00:00", "Z")
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        base = {
             "id": self.id,
             "symbol": self.symbol,
             "signal_type": self.signal_type.value,
@@ -79,3 +81,31 @@ class Signal(Base):
             "quantity": self.quantity,
             "price": self.price
         }
+
+        # Attach Gemini review URL (lightweight client-side validation prompt)
+        try:
+            prompt_payload = {
+                "symbol": self.symbol,
+                "type": self.signal_type.value.upper(),
+                "entry_price": self.price,
+                "stop_loss": self.stop_loss,
+                "take_profit": self.take_profit,
+                "reason": self.reason,
+                "strategy": (self.extras or {}).get("strategy"),
+                "confidence": (self.extras or {}).get("confidence"),
+                "created_at": base["created_at"],
+            }
+            prompt_text = (
+                "Review trading signal and assess risk. "
+                f"Symbol: {prompt_payload['symbol']}. Type: {prompt_payload['type']}. "
+                f"Entry: {prompt_payload['entry_price']}. SL: {prompt_payload['stop_loss']}. TP: {prompt_payload['take_profit']}. "
+                f"Strategy: {prompt_payload['strategy']}. Confidence: {prompt_payload['confidence']}. "
+                "List potential risks, market conditions to watch, and recommend position sizing adjustments."
+            )
+            encoded = urllib.parse.quote(prompt_text)
+            base["gemini_review_url"] = f"https://gemini.google.com/app?prompt={encoded}"
+            base["gemini_prompt"] = prompt_text  # Optional transparency for clients
+        except Exception:
+            base["gemini_review_url"] = None
+
+        return base

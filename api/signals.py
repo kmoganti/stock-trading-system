@@ -14,7 +14,6 @@ from services.risk import RiskService
 from services.data_fetcher import DataFetcher
 from services.strategy import StrategyService
 from services.watchlist import WatchlistService
-from services.signal_validator import get_signal_validator, ValidationResult
 from .auth import get_api_key
 from sqlalchemy import select, update
 from services import progress as progress_service
@@ -26,6 +25,38 @@ logger = logging.getLogger(__name__)
 # Test mode - bypass IIFL calls
 TEST_MODE = os.getenv("TEST_MODE", "false").lower() == "true"
 logger.info(f"🧪 Signals API initialized with TEST_MODE={TEST_MODE} (env={os.getenv('TEST_MODE', 'not set')})")
+
+def _build_gemini_link(signal_payload: Dict[str, Any]) -> Dict[str, str]:
+    """Construct a Gemini URL and prompt text for outside-of-system validation.
+
+    Note: Gemini web may not prefill prompts via URL. We still include the
+    prompt in the URL query for convenience and always return the plain text
+    prompt so clients (UI/Telegram) can show/copy it.
+    """
+    try:
+        symbol = signal_payload.get("symbol")
+        stype = str(signal_payload.get("signal_type", "")).upper()
+        entry = signal_payload.get("entry_price") or signal_payload.get("price")
+        sl = signal_payload.get("stop_loss")
+        tp = signal_payload.get("target_price") or signal_payload.get("take_profit")
+        strategy = signal_payload.get("strategy")
+        confidence = signal_payload.get("confidence")
+        reason = signal_payload.get("reason")
+
+        prompt = (
+            "Review trading signal and assess risk. "
+            f"Symbol: {symbol}. Type: {stype}. "
+            f"Entry: {entry}. SL: {sl}. TP: {tp}. "
+            f"Strategy: {strategy}. Confidence: {confidence}. "
+            f"Reason: {reason}. "
+            "List potential risks, market context to verify, and execution cautions."
+        )
+        import urllib.parse
+        encoded = urllib.parse.quote(prompt)
+        url = f"https://gemini.google.com/app?prompt={encoded}"
+        return {"gemini_review_url": url, "gemini_prompt": prompt}
+    except Exception:
+        return {"gemini_review_url": None, "gemini_prompt": ""}
 
 async def get_order_manager(db: AsyncSession = Depends(get_db)) -> OrderManager:
     """Dependency to get OrderManager instance"""
@@ -181,7 +212,7 @@ async def generate_intraday_signals(
     persisted: Optional[bool] = None,  # alias for persist (backward compatibility with clients)
     queue_for_approval: bool = True,
     use_batch: bool = True,  # new: prefer batched data fetch to avoid long blocking
-    validate: bool = False,   # default off to avoid live-call hangs in UI-triggered runs
+    validate: bool = False,   # ignored; server-side validation removed
     max_concurrency: int = 4,  # new: limit concurrent processing
     interval: Optional[str] = None,  # new: override interval
     days: Optional[int] = None,      # new: override days window
@@ -250,6 +281,7 @@ async def generate_intraday_signals(
                                 "strategy": ts.strategy,
                                 "metadata": ts.metadata or {},
                             }
+                            sig_dict.update(_build_gemini_link(sig_dict))
                             to_add.append(sig_dict)
                         async with lock:
                             generated.extend(to_add)
@@ -264,6 +296,16 @@ async def generate_intraday_signals(
                                     "reason": f"{ts.strategy} generated",
                                     "strategy": ts.strategy,
                                     "confidence": ts.confidence,
+                                    "gemini_review_url": _build_gemini_link({
+                                        "symbol": ts.symbol,
+                                        "signal_type": ts.signal_type.value,
+                                        "entry_price": ts.entry_price,
+                                        "stop_loss": ts.stop_loss,
+                                        "target_price": ts.target_price,
+                                        "strategy": ts.strategy,
+                                        "confidence": ts.confidence,
+                                        "reason": f"{ts.strategy} generated",
+                                    })["gemini_review_url"],
                                 })
                                 if created:
                                     if queue_for_approval:
@@ -301,6 +343,7 @@ async def generate_intraday_signals(
                         "strategy": ts.strategy,
                         "metadata": ts.metadata or {},
                     }
+                    sig_dict.update(_build_gemini_link(sig_dict))
                     generated.append(sig_dict)
                     if persist:
                         created = await order_manager.create_signal({
@@ -312,6 +355,7 @@ async def generate_intraday_signals(
                             "reason": f"{ts.strategy} generated",
                             "strategy": ts.strategy,
                             "confidence": ts.confidence,
+                            "gemini_review_url": _build_gemini_link(sig_dict)["gemini_review_url"],
                         })
                         if created:
                             persisted_ids.append(created.id)
@@ -391,6 +435,8 @@ async def generate_live_signals(
                     "strategy": signal["strategy"],
                     "confidence": opportunity["confidence"],
                 }
+                # Attach Gemini review URL
+                signal_data.update(_build_gemini_link(signal_data))
                 generated_signals.append(signal_data)
                 
                 if persist:
@@ -404,6 +450,7 @@ async def generate_live_signals(
                         "reason": f"Live scan: {signal['reason']}",
                         "strategy": signal["strategy"],
                         "confidence": opportunity["confidence"],
+                        "gemini_review_url": signal_data.get("gemini_review_url")
                     })
                     if created:
                         persisted_ids.append(created.id)
@@ -485,6 +532,7 @@ async def generate_historic_signals(
                     "strategy": ts.strategy,
                     "metadata": ts.metadata or {}
                 }
+                sig_dict.update(_build_gemini_link(sig_dict))
                 generated.append(sig_dict)
                 if persist:
                     created = await order_manager.create_signal({
@@ -496,6 +544,7 @@ async def generate_historic_signals(
                         "reason": f"Historic replay - {ts.strategy}",
                         "strategy": ts.strategy,
                         "confidence": ts.confidence,
+                        "gemini_review_url": sig_dict.get("gemini_review_url")
                     })
                     if created:
                         persisted.append(created.id)
@@ -721,187 +770,4 @@ async def get_signal_order_status(
         logger.error(f"Error getting order status for signal {signal_id}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/{signal_id}/validate")
-async def validate_signal_with_llm(
-    signal_id: int,
-    db: AsyncSession = Depends(get_db)
-) -> Dict[str, Any]:
-    """
-    Validate a specific signal using LLM analysis
-    """
-    try:
-        from datetime import datetime
-        
-        # Get the signal
-        signal = await db.get(Signal, signal_id)
-        if not signal:
-            raise HTTPException(status_code=404, detail="Signal not found")
-        
-        # Get LLM validator
-        validator = get_signal_validator()
-        
-        # Convert signal to dict for validation
-        signal_data = {
-            "symbol": signal.symbol,
-            "signal_type": signal.signal_type.value,
-            "price": float(signal.entry_price),
-            "stop_loss": float(signal.stop_loss) if signal.stop_loss else None,
-            "take_profit": float(signal.take_profit) if signal.take_profit else None,
-            "quantity": signal.quantity,
-            "confidence": float(signal.confidence) if signal.confidence else 0.7,
-            "strategy_name": signal.strategy,
-            "reason": signal.reason,
-            "generated_at": signal.generated_at.isoformat() if signal.generated_at else None
-        }
-        
-        # Get market context (you can enhance this)
-        market_context = {
-            "market_trend": "neutral",  # You can fetch from market data service
-            "volatility": "medium",
-            "sector_performance": "mixed"
-        }
-        
-        # Validate with LLM
-        validation = await validator.validate_signal(signal_data, market_context)
-        
-        # Update signal with validation metadata
-        signal.metadata = signal.metadata or {}
-        validation_metadata = validator.get_execution_metadata(validation)
-        signal.metadata.update(validation_metadata)
-        signal.metadata["llm_validated_at"] = str(datetime.utcnow())
-        
-        await db.commit()
-        
-        return {
-            "signal_id": signal_id,
-            "validation_result": validation.result.value,
-            "confidence": validation.confidence,
-            "reasoning": validation.reasoning,
-            "risk_factors": validation.risk_factors,
-            "suggestions": validation.suggestions,
-            "market_context": validation.market_context,
-            "execution_priority": validation.execution_priority,
-            "should_execute": validator.should_execute_signal(validation),
-            "recommended_position_size": validation.recommended_position_size
-        }
-        
-    except Exception as e:
-        logger.error(f"Error validating signal {signal_id}: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Validation failed: {str(e)}")
-
-@router.post("/validate/batch")
-async def validate_signals_batch(
-    signal_ids: List[int],
-    db: AsyncSession = Depends(get_db)
-) -> Dict[str, Any]:
-    """
-    Validate multiple signals using LLM analysis
-    """
-    try:
-        from datetime import datetime
-        
-        if len(signal_ids) > 10:
-            raise HTTPException(status_code=400, detail="Maximum 10 signals can be validated at once")
-        
-        # Get all signals
-        signals = []
-        for signal_id in signal_ids:
-            signal = await db.get(Signal, signal_id)
-            if signal:
-                signals.append(signal)
-        
-        if not signals:
-            raise HTTPException(status_code=404, detail="No valid signals found")
-        
-        # Get LLM validator
-        validator = get_signal_validator()
-        
-        # Convert signals to dict format
-        signals_data = []
-        for signal in signals:
-            signal_data = {
-                "id": signal.id,
-                "symbol": signal.symbol,
-                "signal_type": signal.signal_type.value,
-                "price": float(signal.entry_price),
-                "stop_loss": float(signal.stop_loss) if signal.stop_loss else None,
-                "take_profit": float(signal.take_profit) if signal.take_profit else None,
-                "quantity": signal.quantity,
-                "confidence": float(signal.confidence) if signal.confidence else 0.7,
-                "strategy_name": signal.strategy,
-                "reason": signal.reason,
-                "generated_at": signal.generated_at.isoformat() if signal.generated_at else None
-            }
-            signals_data.append(signal_data)
-        
-        # Get market context
-        market_context = {
-            "market_trend": "neutral",
-            "volatility": "medium",
-            "sector_performance": "mixed"
-        }
-        
-        # Validate all signals
-        validations = await validator.validate_multiple_signals(signals_data, market_context)
-        
-        # Update signals with validation metadata
-        validation_results = []
-        for signal, validation in zip(signals, validations):
-            signal.metadata = signal.metadata or {}
-            validation_metadata = validator.get_execution_metadata(validation)
-            signal.metadata.update(validation_metadata)
-            signal.metadata["llm_validated_at"] = str(datetime.utcnow())
-            
-            validation_results.append({
-                "signal_id": signal.id,
-                "symbol": signal.symbol,
-                "validation_result": validation.result.value,
-                "confidence": validation.confidence,
-                "reasoning": validation.reasoning,
-                "should_execute": validator.should_execute_signal(validation),
-                "execution_priority": validation.execution_priority
-            })
-        
-        await db.commit()
-        
-        # Summary statistics
-        approved_count = sum(1 for v in validations if v.result == ValidationResult.APPROVE)
-        rejected_count = sum(1 for v in validations if v.result == ValidationResult.REJECT)
-        caution_count = sum(1 for v in validations if v.result == ValidationResult.CAUTION)
-        
-        return {
-            "total_validated": len(validations),
-            "approved": approved_count,
-            "rejected": rejected_count, 
-            "caution": caution_count,
-            "results": validation_results
-        }
-        
-    except Exception as e:
-        logger.error(f"Error validating signals batch: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Batch validation failed: {str(e)}")
-
-@router.get("/validation/status")
-async def get_validation_status() -> Dict[str, Any]:
-    """
-    Get LLM validation service status and configuration
-    """
-    try:
-        validator = get_signal_validator()
-        
-        return {
-            "validation_enabled": validator.validation_enabled,
-            "primary_provider": validator.primary_provider,
-            "timeout_seconds": validator.validation_timeout,
-            "min_confidence_threshold": validator.min_confidence_threshold,
-            "openai_available": validator.openai_client is not None,
-            "anthropic_available": validator.anthropic_client is not None,
-            "fallback_mode": not validator.validation_enabled
-        }
-        
-    except Exception as e:
-        logger.error(f"Error getting validation status: {str(e)}")
-        return {
-            "validation_enabled": False,
-            "error": str(e)
-        }
+# Validation endpoints removed – external review via Gemini links replaces server-side LLM validation.

@@ -594,13 +594,9 @@ class StrategyService:
                 if basic_signal:
                     signals.append(basic_signal)
             
-            # Filter signals and log generation
-            filtered_signals = []
+            # Validation removed: return all raw strategy signals directly.
             for signal in signals:
-                if await self._validate_signal(signal, data):
-                    filtered_signals.append(signal)
-                    
-                    # Log signal generation
+                try:
                     critical_events.log_signal_generation(
                         signal_id=f"signal_{symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
                         symbol=signal.symbol,
@@ -609,12 +605,13 @@ class StrategyService:
                         strategy=getattr(signal, 'strategy_name', strategy_name or category or 'unknown'),
                         entry_price=getattr(signal, 'entry_price', 0.0),
                         stop_loss=getattr(signal, 'stop_loss', 0.0),
-                        target=getattr(signal, 'target', 0.0),
+                        target=getattr(signal, 'target_price', 0.0),
                         category=category
                     )
-            
-            logger.info(f"Generated {len(filtered_signals)} signals for {symbol} ({category})")
-            return filtered_signals
+                except Exception:
+                    pass
+            logger.info(f"Generated {len(signals)} signals for {symbol} ({category}) (no validation)")
+            return signals
             
         except Exception as e:
             logger.error(f"Error generating signals for {symbol}: {str(e)}")
@@ -625,7 +622,7 @@ class StrategyService:
         symbol: str,
         data: List[Dict],
         strategy_name: Optional[str] = None,
-        validate: bool = True,
+        validate: bool = True,  # retained for backward compatibility; ignored now
     ) -> List[TradingSignal]:
         """Generate signals using pre-fetched historical data (skips any data calls).
 
@@ -659,24 +656,16 @@ class StrategyService:
                 if basic_signal:
                     signals.append(basic_signal)
 
-            if not validate:
-                return signals
-
-            # Validate each signal and log details
-            filtered: List[TradingSignal] = []
+            # Validation removed – return all generated signals
             for sig in signals:
                 try:
                     logger.info(
-                        f"Generated signal: {sig.strategy} {sig.signal_type.value} {sig.symbol} "
+                        f"Generated signal (no validation): {sig.strategy} {sig.signal_type.value} {sig.symbol} "
                         f"entry={sig.entry_price} stop={sig.stop_loss} target={sig.target_price} confidence={sig.confidence}"
                     )
-                    ok = await self._validate_signal(sig, data)
-                    logger.info(f"Validation result for {sig.symbol}: {'PASS' if ok else 'FAIL'}")
-                    if ok:
-                        filtered.append(sig)
-                except Exception as e:
-                    logger.error(f"Error during per-signal validation/logging for {sig.symbol}: {e}")
-            return filtered
+                except Exception:
+                    pass
+            return signals
         except Exception as e:
             logger.error(f"Error generating signals from pre-fetched data for {symbol}: {e}")
             return []
@@ -825,9 +814,8 @@ class StrategyService:
                         }
                     )
                     
-                    # Validate the signal
-                    if await self._validate_signal(signal, []):
-                        signals.append(signal)
+                    # Validation removed
+                    signals.append(signal)
             
             return signals
             

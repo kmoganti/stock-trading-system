@@ -84,6 +84,21 @@ class TelegramBot:
             take_profit = signal.get('take_profit', 'N/A')
             margin_required = signal.get('margin_required', 0)
             expiry_time = signal.get('expiry_time', 'N/A')
+            # Gemini review url may be present in payload; else construct a basic one
+            gemini_url = signal.get('gemini_review_url')
+            if not gemini_url:
+                try:
+                    import urllib.parse
+                    prompt = (
+                        "Review trading signal and assess risk. "
+                        f"Symbol: {symbol}. Type: {str(signal_type).upper()}. "
+                        f"Entry: {signal.get('price') or signal.get('entry_price')}. "
+                        f"SL: {stop_loss}. TP: {take_profit}. "
+                        f"Reason: {reason}."
+                    )
+                    gemini_url = f"https://gemini.google.com/app?prompt={urllib.parse.quote(prompt)}"
+                except Exception:
+                    gemini_url = None
             
             message = (
                 f"🔔 <b>New Trading Signal</b>\n\n"
@@ -98,12 +113,15 @@ class TelegramBot:
             )
             
             # Create inline keyboard
-            keyboard = [
-                [
-                    InlineKeyboardButton("✅ Approve", callback_data=f"approve:{signal_id}"),
-                    InlineKeyboardButton("❌ Reject", callback_data=f"reject:{signal_id}")
-                ]
-            ]
+            keyboard = []
+            # Add Gemini review button if available
+            if gemini_url:
+                keyboard.append([InlineKeyboardButton("🧠 Review in Gemini", url=gemini_url)])
+            # Approve / Reject row
+            keyboard.append([
+                InlineKeyboardButton("✅ Approve", callback_data=f"approve:{signal_id}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"reject:{signal_id}")
+            ])
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             await self.bot.send_message(

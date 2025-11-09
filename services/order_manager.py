@@ -105,7 +105,8 @@ class OrderManager:
                 price=signal_data.get('entry_price') if signal_data.get('entry_price') is not None else signal_data.get('price'),
                 extras={
                     'confidence': signal_data.get('confidence', 0.5),
-                    'strategy': signal_data.get('strategy', 'unknown')
+                    'strategy': signal_data.get('strategy', 'unknown'),
+                    'gemini_review_url': signal_data.get('gemini_review_url')
                 }
             )
             
