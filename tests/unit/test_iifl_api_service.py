@@ -63,7 +63,7 @@ class TestIIFLAPIService:
         assert iifl_service.app_secret is not None
         assert iifl_service.session_token is None
 
-        @pytest.mark.asyncio
+    @pytest.mark.asyncio
     async def test_authentication_success(self, iifl_service, mock_auth_response):
         """Test successful authentication"""
         with patch('httpx.AsyncClient.post') as mock_post:

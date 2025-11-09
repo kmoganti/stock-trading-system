@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Parallel Scheduler Testing Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        
+        .header h1 {
+            color: #333;
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+        
+        .header .subtitle {
+            color: #666;
+            font-size: 1.1em;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-weight: bold;
+            margin-left: 15px;
+        }
+        
+        .status-active {
+            background: #4caf50;
+            color: white;
+        }
+        
+        .status-inactive {
+            background: #f44336;
+            color: white;
+        }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        
+        .card h2 {
+            font-size: 1.5em;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 3px solid #667eea;
+        }
+        
+        .card.old-scheduler h2 {
+            border-bottom-color: #3b82f6;
+        }
+        
+        .card.optimized-scheduler h2 {
+            border-bottom-color: #10b981;
+        }
+        
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .metric:last-child {
+            border-bottom: none;
+        }
+        
+        .metric-label {
+            color: #666;
+            font-weight: 500;
+        }
+        
+        .metric-value {
+            color: #333;
+            font-weight: bold;
+        }
+        
+        .job-list {
+            margin-top: 15px;
+        }
+        
+        .job-item {
+            background: #f8f9fa;
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .job-name {
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 5px;
+        }
+        
+        .job-next-run {
+            color: #666;
+            font-size: 0.9em;
+        }
+        
+        .comparison-card {
+            grid-column: 1 / -1;
+        }
+        
+        .savings-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 15px;
+            margin-top: 15px;
+        }
+        
+        .savings-item {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+        }
+        
+        .savings-value {
+            font-size: 2.5em;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        
+        .savings-label {
+            font-size: 0.9em;
+            opacity: 0.9;
+        }
+        
+        .refresh-btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 8px;
+            font-size: 1em;
+            cursor: pointer;
+            margin-top: 15px;
+            transition: background 0.3s;
+        }
+        
+        .refresh-btn:hover {
+            background: #5568d3;
+        }
+        
+        .auto-refresh {
+            margin-left: 15px;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+        
+        .error {
+            background: #fee;
+            color: #c33;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+        }
+        
+        .cache-stats {
+            background: #f0f9ff;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+        }
+        
+        .timestamp {
+            color: #999;
+            font-size: 0.85em;
+            text-align: right;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>
+                ⚡ Parallel Scheduler Testing Dashboard
+                <span id="statusBadge" class="status-badge status-inactive">Loading...</span>
+            </h1>
+            <p class="subtitle">Real-time monitoring of old vs optimized trading schedulers</p>
+            <button class="refresh-btn" onclick="loadData()">🔄 Refresh Now</button>
+            <label class="auto-refresh">
+                <input type="checkbox" id="autoRefresh" checked onchange="toggleAutoRefresh()">
+                Auto-refresh every 10s
+            </label>
+            <div class="timestamp" id="lastUpdate"></div>
+        </div>
+
+        <div class="grid">
+            <div class="card old-scheduler">
+                <h2>🔵 Old Scheduler</h2>
+                <div id="oldSchedulerContent" class="loading">Loading...</div>
+            </div>
+
+            <div class="card optimized-scheduler">
+                <h2>🟢 Optimized Scheduler</h2>
+                <div id="optimizedSchedulerContent" class="loading">Loading...</div>
+            </div>
+
+            <div class="card comparison-card">
+                <h2>📊 Performance Comparison & Savings</h2>
+                <div id="comparisonContent" class="loading">Loading...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let autoRefreshInterval = null;
+
+        function toggleAutoRefresh() {
+            const enabled = document.getElementById('autoRefresh').checked;
+            if (enabled) {
+                autoRefreshInterval = setInterval(loadData, 10000);
+            } else {
+                if (autoRefreshInterval) {
+                    clearInterval(autoRefreshInterval);
+                }
+            }
+        }
+
+        async function loadData() {
+            try {
+                // Update timestamp
+                document.getElementById('lastUpdate').textContent = 
+                    `Last updated: ${new Date().toLocaleTimeString()}`;
+
+                // Load scheduler status
+                const statusResponse = await fetch('/api/scheduler/status');
+                if (!statusResponse.ok) throw new Error('Failed to load status');
+                const statusData = await statusResponse.json();
+
+                // Update old scheduler
+                updateOldScheduler(statusData.old_scheduler);
+                
+                // Update optimized scheduler
+                updateOptimizedScheduler(statusData.optimized_scheduler);
+
+                // Load cache stats
+                const cacheResponse = await fetch('/api/scheduler/cache/stats');
+                if (cacheResponse.ok) {
+                    const cacheData = await cacheResponse.json();
+                    updateCacheStats(cacheData);
+                }
+
+                // Load comparison stats
+                const comparisonResponse = await fetch('/api/scheduler/stats/comparison');
+                if (comparisonResponse.ok) {
+                    const comparisonData = await comparisonResponse.json();
+                    updateComparison(comparisonData);
+                }
+
+                // Load API call estimates
+                const estimateResponse = await fetch('/api/scheduler/api-calls/estimate');
+                if (estimateResponse.ok) {
+                    const estimateData = await estimateResponse.json();
+                    updateSavings(estimateData);
+                }
+
+                // Update status badge
+                const bothRunning = statusData.old_scheduler.running && 
+                                   statusData.optimized_scheduler.running;
+                const badge = document.getElementById('statusBadge');
+                badge.textContent = bothRunning ? '⚡ Both Running' : '⚠️ Not Running';
+                badge.className = `status-badge ${bothRunning ? 'status-active' : 'status-inactive'}`;
+
+            } catch (error) {
+                console.error('Error loading data:', error);
+                showError(error.message);
+            }
+        }
+
+        function updateOldScheduler(data) {
+            const content = document.getElementById('oldSchedulerContent');
+            let html = `
+                <div class="metric">
+                    <span class="metric-label">Status</span>
+                    <span class="metric-value">${data.running ? '✅ Running' : '❌ Stopped'}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Total Jobs</span>
+                    <span class="metric-value">${data.job_count}</span>
+                </div>
+            `;
+
+            if (data.jobs && data.jobs.length > 0) {
+                html += '<div class="job-list">';
+                data.jobs.forEach(job => {
+                    html += `
+                        <div class="job-item">
+                            <div class="job-name">${job.name}</div>
+                            <div class="job-next-run">Next run: ${job.next_run || 'Not scheduled'}</div>
+                        </div>
+                    `;
+                });
+                html += '</div>';
+            }
+
+            content.innerHTML = html;
+        }
+
+        function updateOptimizedScheduler(data) {
+            const content = document.getElementById('optimizedSchedulerContent');
+            let html = `
+                <div class="metric">
+                    <span class="metric-label">Status</span>
+                    <span class="metric-value">${data.running ? '✅ Running' : '❌ Stopped'}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Total Jobs</span>
+                    <span class="metric-value">${data.job_count}</span>
+                </div>
+            `;
+
+            if (data.jobs && data.jobs.length > 0) {
+                html += '<div class="job-list">';
+                data.jobs.forEach(job => {
+                    html += `
+                        <div class="job-item">
+                            <div class="job-name">${job.name}</div>
+                            <div class="job-next-run">Next run: ${job.next_run || 'Not scheduled'}</div>
+                        </div>
+                    `;
+                });
+                html += '</div>';
+            }
+
+            content.innerHTML = html;
+        }
+
+        function updateCacheStats(data) {
+            const cacheHtml = `
+                <div class="cache-stats">
+                    <h3>📦 Cache Statistics</h3>
+                    <div class="metric">
+                        <span class="metric-label">Total Cached Symbols</span>
+                        <span class="metric-value">${data.summary.total_cached_symbols}</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Valid Cache Entries</span>
+                        <span class="metric-value">${data.summary.valid_cache_entries}</span>
+                    </div>
+                    ${data.summary.total_cached_symbols > 0 ? `
+                        <div class="metric">
+                            <span class="metric-label">Cache Hit Rate</span>
+                            <span class="metric-value">${Math.round(data.summary.valid_cache_entries / data.summary.total_cached_symbols * 100)}%</span>
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+
+            // Add to optimized scheduler card
+            const optimizedContent = document.getElementById('optimizedSchedulerContent');
+            if (!optimizedContent.innerHTML.includes('cache-stats')) {
+                optimizedContent.innerHTML += cacheHtml;
+            }
+        }
+
+        function updateComparison(data) {
+            // Update comparison data (if needed)
+        }
+
+        function updateSavings(data) {
+            const content = document.getElementById('comparisonContent');
+            const savings = data.savings;
+            const oldTotal = data.old_scheduler.total_calls_per_day;
+            const newTotal = data.optimized_scheduler.total_calls_per_day;
+
+            const html = `
+                <div class="savings-grid">
+                    <div class="savings-item">
+                        <div class="savings-label">Old Scheduler</div>
+                        <div class="savings-value">${oldTotal}</div>
+                        <div class="savings-label">API calls/day</div>
+                    </div>
+                    <div class="savings-item">
+                        <div class="savings-value">→</div>
+                        <div class="savings-label">${savings.reduction_percent.toFixed(1)}% Reduction</div>
+                    </div>
+                    <div class="savings-item">
+                        <div class="savings-label">Optimized Scheduler</div>
+                        <div class="savings-value">${newTotal}</div>
+                        <div class="savings-label">API calls/day</div>
+                    </div>
+                </div>
+                
+                <h3 style="margin-top: 25px; margin-bottom: 15px;">💡 Detailed Breakdown</h3>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                    <div>
+                        <h4 style="margin-bottom: 10px;">Old Scheduler</h4>
+                        ${Object.entries(data.old_scheduler.breakdown).map(([key, value]) => `
+                            <div class="metric">
+                                <span class="metric-label">${key}</span>
+                                <span class="metric-value">${value.calls_per_day} calls</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                    <div>
+                        <h4 style="margin-bottom: 10px;">Optimized Scheduler</h4>
+                        ${Object.entries(data.optimized_scheduler.breakdown).map(([key, value]) => `
+                            <div class="metric">
+                                <span class="metric-label">${key}</span>
+                                <span class="metric-value">${value.calls_per_day} calls</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+
+                <div style="margin-top: 20px; padding: 20px; background: #d4edda; border-radius: 8px; color: #155724;">
+                    <h3>✅ Estimated Daily Savings</h3>
+                    <p style="font-size: 1.3em; margin-top: 10px;">
+                        <strong>${savings.calls_saved_per_day} fewer API calls</strong> per day<br>
+                        <strong>${savings.reduction_percent.toFixed(1)}%</strong> reduction in IIFL API usage
+                    </p>
+                </div>
+            `;
+
+            content.innerHTML = html;
+        }
+
+        function showError(message) {
+            const cards = ['oldSchedulerContent', 'optimizedSchedulerContent', 'comparisonContent'];
+            cards.forEach(id => {
+                const element = document.getElementById(id);
+                if (element.innerHTML.includes('Loading')) {
+                    element.innerHTML = `<div class="error">❌ Error: ${message}</div>`;
+                }
+            });
+        }
+
+        // Load data on page load
+        loadData();
+        
+        // Start auto-refresh
+        toggleAutoRefresh();
+    </script>
+</body>
+</html>
