@@ -460,16 +460,35 @@ class StrategyService:
                 logger.debug(f"Validation failed: confidence {signal.confidence} < {min_confidence}")
                 return False
             
-            # Get current market data for additional validation
-            current_price = await self.data_fetcher.get_live_price(signal.symbol)
+            # Get current market data for additional validation (with strict timeout to avoid hangs)
+            try:
+                current_price = await asyncio.wait_for(
+                    self.data_fetcher.get_live_price(signal.symbol), timeout=1.5
+                )
+            except asyncio.TimeoutError:
+                current_price = None
+                logger.debug(f"Validation price fetch timeout for {signal.symbol}")
+            except Exception as e:
+                current_price = None
+                logger.debug(f"Validation price fetch error for {signal.symbol}: {e}")
+
             if current_price and abs(current_price - signal.entry_price) / signal.entry_price > 0.05:
                 # Price has moved more than 5% since signal generation
                 logger.warning(f"Signal for {signal.symbol} may be stale - price moved from {signal.entry_price} to {current_price}")
                 logger.debug("Validation failed: price moved >5%")
                 return False
             
-            # Check liquidity (soft-fail if unavailable)
-            liquidity_info = await self.data_fetcher.get_liquidity_info(signal.symbol)
+            # Check liquidity (soft-fail if unavailable) with timeout
+            try:
+                liquidity_info = await asyncio.wait_for(
+                    self.data_fetcher.get_liquidity_info(signal.symbol), timeout=1.5
+                )
+            except asyncio.TimeoutError:
+                liquidity_info = None
+                logger.debug(f"Validation liquidity fetch timeout for {signal.symbol}")
+            except Exception as e:
+                liquidity_info = None
+                logger.debug(f"Validation liquidity fetch error for {signal.symbol}: {e}")
             if liquidity_info and liquidity_info.get('liquidity_score', 0) < 20:  # Low liquidity threshold
                 logger.warning(f"Low liquidity for {signal.symbol}: {liquidity_info.get('liquidity_score', 0)}")
                 logger.debug("Validation failed: low liquidity")

@@ -181,7 +181,7 @@ async def generate_intraday_signals(
     persisted: Optional[bool] = None,  # alias for persist (backward compatibility with clients)
     queue_for_approval: bool = True,
     use_batch: bool = True,  # new: prefer batched data fetch to avoid long blocking
-    validate: bool = True,   # new: allow skipping validation to speed up
+    validate: bool = False,   # default off to avoid live-call hangs in UI-triggered runs
     max_concurrency: int = 4,  # new: limit concurrent processing
     interval: Optional[str] = None,  # new: override interval
     days: Optional[int] = None,      # new: override days window
