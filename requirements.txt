@@ -23,6 +23,9 @@ python-dotenv
 # Templating
 Jinja2
 
+# Redis client for async usage (used by services/redis_service.py)
+redis
+
 # Pydantic (settings) - code uses pydantic/pydantic-settings if available
 pydantic
 pydantic-settings

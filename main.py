@@ -139,26 +139,22 @@ async def lifespan(app: FastAPI):
     
     # Ensure database schema is up-to-date (idempotent)
     # In SAFE_MODE, skip DB initialization to avoid blocking startup when DB is unavailable
-    try:
-        if SAFE_MODE:
-            logger.warning("SAFE_MODE=true - skipping database initialization")
-            log_timing("Database initialization skipped (SAFE_MODE)")
-        else:
-            from models.database import init_db as _ensure_db
-            try:
-                # Prevent startup hang if DB is unreachable
-                await asyncio.wait_for(_ensure_db(), timeout=3.0)
-                log_timing("Database initialized/migrated")
-            except asyncio.TimeoutError:
-                logger.warning("⚠️ Database initialization timed out at startup - continuing without DB")
-                log_timing("Database init timed out - continuing")
-            except Exception as _e:
-                # Do NOT fail startup; log and continue so HTTP server binds
-                logger.warning(f"⚠️ Database initialization failed at startup: {_e} - continuing without DB")
-                log_timing(f"Database init failed - continuing: {_e}")
-    except Exception as e:
-        logger.error(f"Database initialization failed: {e}")
-        log_timing(f"Database init failed: {e}")
+    if SAFE_MODE:
+        logger.warning("SAFE_MODE=true - skipping database initialization")
+        log_timing("Database initialization skipped (SAFE_MODE)")
+    else:
+        from models.database import init_db as _ensure_db
+        try:
+            # Prevent startup hang if DB is unreachable
+            await asyncio.wait_for(_ensure_db(), timeout=3.0)
+            log_timing("Database initialized/migrated")
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ Database initialization timed out at startup - continuing without DB")
+            log_timing("Database init timed out - continuing")
+        except Exception as _e:
+            # Do NOT fail startup; log and continue so HTTP server binds
+            logger.warning(f"⚠️ Database initialization failed at startup: {_e} - continuing without DB")
+            log_timing(f"Database init failed - continuing: {_e}")
     
     log_timing("Logging system events")
     trading_logger.log_system_event("application_startup", {"version": "1.0.0"})

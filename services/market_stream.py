@@ -3,6 +3,7 @@ import asyncio
 import logging
 import struct
 from typing import Dict, List, Optional, Set
+from functools import partial
 
 from .iifl_api import IIFLAPIService
 from .screener import ScreenerService
@@ -90,7 +91,7 @@ class MarketStreamService:
             # BridgePy plugin requires port 8883 for IIFL market stream
             bridge_port = int(os.getenv("IIFL_BRIDGE_PORT", "8883"))
             conn_req = f'{{"host": "bridge.iiflcapital.com", "port": {bridge_port}, "token": "{session_token}"}}'
-            self.connection.connect_host(conn_req)
+            await asyncio.to_thread(self.connection.connect_host, conn_req)
             self.is_connected = True
             logger.info("Successfully connected to IIFL Market Stream.")
 
@@ -100,7 +101,7 @@ class MarketStreamService:
             # Subscribe to the 52-week high event for the NSE Equity segment
             # Other events like 'on_upper_circuit_data_received' can be added here too.
             sub_req = '{"subscriptionList": ["nseeq"]}'
-            self.connection.subscribe_52_week_high(sub_req)
+            await asyncio.to_thread(self.connection.subscribe_52_week_high, sub_req)
             logger.info("Subscribed to 52-week high events for NSEEQ.")
 
         except Exception as e:
@@ -110,6 +111,6 @@ class MarketStreamService:
     async def disconnect(self):
         """Disconnects from the market stream."""
         if self.is_connected:
-            self.connection.disconnect_host()
+            await asyncio.to_thread(self.connection.disconnect_host)
             self.is_connected = False
             logger.info("Disconnected from IIFL Market Stream.")

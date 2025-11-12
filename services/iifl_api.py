@@ -9,6 +9,8 @@ import os
 import time
 from collections import deque
 from services.logging_service import trading_logger
+import aiofiles
+import aiofiles.os
 
 logger = logging.getLogger(__name__)
 
@@ -1036,7 +1038,7 @@ class IIFLAPIService:
             payload["instrumentId"] = str(symbol)
         else:
             # Resolve symbol to instrumentId - no symbol fallback
-            local_map = self._load_normalized_contract_map()
+            local_map = await self._load_normalized_contract_map()
             mapped = self._resolve_instrument_id_with_variants(symbol, local_map)
             if mapped:
                 payload["instrumentId"] = str(mapped)
@@ -1076,7 +1078,7 @@ class IIFLAPIService:
         instrument_strs = [str(instr) for instr in instruments]
 
         # Load normalized contract map with variant matching
-        local_map = self._load_normalized_contract_map()
+        local_map = await self._load_normalized_contract_map()
 
         try:
             raw_obj_list = []
@@ -1115,7 +1117,7 @@ class IIFLAPIService:
                 payload["instrumentId"] = str(int(instrument))
             else:
                 # Resolve symbol to instrumentId using variant matching
-                local_map = self._load_normalized_contract_map()
+                local_map = await self._load_normalized_contract_map()
                 mapped = self._resolve_instrument_id_with_variants(instrument, local_map)
                 if mapped:
                     payload["instrumentId"] = str(mapped)
@@ -1205,14 +1207,15 @@ class IIFLAPIService:
                 return str(v)
         return None
 
-    def _load_normalized_contract_map(self) -> Dict[str, str]:
+    async def _load_normalized_contract_map(self) -> Dict[str, str]:
         """Load and normalize contract map with same logic as DataFetcher"""
         local_map: Dict[str, str] = {}
         try:
             local_path = os.path.join(os.getcwd(), "data", "contracts_nseeq.json")
-            if os.path.exists(local_path):
-                with open(local_path, "r", encoding="utf-8") as f:
-                    file_data = json.load(f)
+            if await aiofiles.os.path.exists(local_path):
+                async with aiofiles.open(local_path, "r", encoding="utf-8") as f:
+                    content = await f.read()
+                    file_data = await asyncio.to_thread(json.loads, content)
                     for k, v in file_data.items():
                         try:
                             kk = str(k).upper().strip()

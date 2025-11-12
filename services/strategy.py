@@ -428,78 +428,7 @@ class StrategyService:
             logger.error(f"Error in momentum strategy for {symbol}: {str(e)}")
             return None
     
-    async def _validate_signal(self, signal: TradingSignal, historical_data: List[Dict]) -> bool:
-        """Validate signal against basic criteria"""
-        try:
-            # Per-signal validation start log
-            logger.debug(f"Validating signal: {signal.strategy} {signal.signal_type.value} {signal.symbol} entry={signal.entry_price} stop={signal.stop_loss} target={signal.target_price} confidence={signal.confidence}")
-            # Basic validation checks
-            if not signal or not signal.symbol:
-                logger.debug("Validation failed: missing signal or symbol")
-                return False
-            
-            # Check if price is reasonable
-            if signal.entry_price <= 0:
-                return False
-            
-            # Check stop loss and target are reasonable
-            if signal.signal_type == SignalType.BUY:
-                if signal.stop_loss >= signal.entry_price:
-                    return False
-                if signal.target_price <= signal.entry_price:
-                    return False
-            elif signal.signal_type == SignalType.SELL:
-                if signal.stop_loss <= signal.entry_price:
-                    return False
-                if signal.target_price >= signal.entry_price:
-                    return False
-            
-            # Check confidence level (using configurable threshold)
-            min_confidence = getattr(self.settings, 'min_confidence_threshold', 0.65)
-            if signal.confidence < min_confidence:
-                logger.debug(f"Validation failed: confidence {signal.confidence} < {min_confidence}")
-                return False
-            
-            # Get current market data for additional validation (with strict timeout to avoid hangs)
-            try:
-                current_price = await asyncio.wait_for(
-                    self.data_fetcher.get_live_price(signal.symbol), timeout=1.5
-                )
-            except asyncio.TimeoutError:
-                current_price = None
-                logger.debug(f"Validation price fetch timeout for {signal.symbol}")
-            except Exception as e:
-                current_price = None
-                logger.debug(f"Validation price fetch error for {signal.symbol}: {e}")
-
-            if current_price and abs(current_price - signal.entry_price) / signal.entry_price > 0.05:
-                # Price has moved more than 5% since signal generation
-                logger.warning(f"Signal for {signal.symbol} may be stale - price moved from {signal.entry_price} to {current_price}")
-                logger.debug("Validation failed: price moved >5%")
-                return False
-            
-            # Check liquidity (soft-fail if unavailable) with timeout
-            try:
-                liquidity_info = await asyncio.wait_for(
-                    self.data_fetcher.get_liquidity_info(signal.symbol), timeout=1.5
-                )
-            except asyncio.TimeoutError:
-                liquidity_info = None
-                logger.debug(f"Validation liquidity fetch timeout for {signal.symbol}")
-            except Exception as e:
-                liquidity_info = None
-                logger.debug(f"Validation liquidity fetch error for {signal.symbol}: {e}")
-            if liquidity_info and liquidity_info.get('liquidity_score', 0) < 20:  # Low liquidity threshold
-                logger.warning(f"Low liquidity for {signal.symbol}: {liquidity_info.get('liquidity_score', 0)}")
-                logger.debug("Validation failed: low liquidity")
-                return False
-            
-            logger.debug("Validation passed")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error validating signal for {signal.symbol}: {str(e)}")
-            return False
+    # _validate_signal removed: server-side validation deprecated in favor of user review via Gemini link.
     
     async def get_watchlist(self, category: Optional[str] = None) -> List[str]:
         """Get the current watchlist, optionally by category"""

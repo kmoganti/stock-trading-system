@@ -330,7 +330,17 @@ async def generate_intraday_signals(
             await progress_service.update(phase="scanning")
             for idx, symbol in enumerate(symbols, start=1):
                 await progress_service.update(current_symbol=symbol, processed=idx)
-                sigs = await strategy.generate_signals(symbol)
+                try:
+                    sigs = await asyncio.wait_for(
+                        strategy.generate_signals(symbol),
+                        timeout=30.0  # 30-second timeout per symbol
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"Timeout generating intraday signals for {symbol}, skipping.")
+                    continue  # Move to the next symbol
+                except Exception as e:
+                    logger.error(f"Error generating intraday signals for {symbol}: {e}")
+                    continue
                 await asyncio.sleep(0)
                 for ts in sigs:
                     sig_dict = {
@@ -511,7 +521,17 @@ async def generate_historic_signals(
 
         for idx, sym in enumerate(symbol_list, start=1):
             await progress_service.update(current_symbol=sym, processed=idx)
-            sigs = await strategy.generate_signals(sym)
+            try:
+                sigs = await asyncio.wait_for(
+                    strategy.generate_signals(sym),
+                    timeout=30.0  # 30-second timeout per symbol
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout generating historic signals for {sym}, skipping.")
+                continue
+            except Exception as e:
+                logger.error(f"Error generating historic signals for {sym}: {e}")
+                continue
             # yield control to keep loop responsive
             await asyncio.sleep(0)
             # Fallback to mock if nothing generated

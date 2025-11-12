@@ -9,6 +9,10 @@ import json
 import os
 from pathlib import Path
 from .iifl_api import IIFLAPIService
+import aiofiles
+import aiofiles.os
+from functools import partial
+
 try:
     from .watchlist import WatchlistService  # type: ignore
 except Exception:
@@ -97,19 +101,15 @@ class DataFetcher:
         safe_symbol = "".join(c for c in symbol if c.isalnum() or c in ('-', '_')).rstrip() or "default"
         return str(cache_dir / f"{safe_symbol}_{interval}.json")
 
-    def _read_from_file_cache(self, path: str) -> Optional[Dict[str, Any]]:
-        """Read data and metadata from the file cache.
-
-        Tries JSON sidecar first for robustness (works without pandas/pyarrow),
-        falling back to parquet if available.
-        """
+    async def _read_from_file_cache(self, path: str) -> Optional[Dict[str, Any]]:
+        """Read data and metadata from the file cache asynchronously."""
         try:
-            # Try JSON sidecar first
             json_path = os.path.splitext(path)[0] + ".json"
-            if os.path.exists(json_path):
+            if await aiofiles.os.path.exists(json_path):
                 try:
-                    with open(json_path, "r", encoding="utf-8") as f:
-                        obj = json.load(f)
+                    async with aiofiles.open(json_path, "r", encoding="utf-8") as f:
+                        content = await f.read()
+                        obj = await asyncio.to_thread(json.loads, content)
                         if isinstance(obj, dict) and "data" in obj and isinstance(obj.get("data"), list):
                             return {
                                 "last_updated": obj.get("last_updated") or obj.get("lastUpdated") or "1970-01-01T00:00:00",
@@ -118,10 +118,9 @@ class DataFetcher:
                 except Exception as e:
                     logger.warning(f"Could not read JSON cache at {json_path}: {e}")
 
-            # Fallback to parquet if pandas is available
-            if HAS_PANDAS and os.path.exists(path):
+            if HAS_PANDAS and await aiofiles.os.path.exists(path):
                 try:
-                    df = pd.read_parquet(path)
+                    df = await asyncio.to_thread(pd.read_parquet, path)
                     if df.empty or 'last_updated' not in df.attrs:
                         return None
                     df_reset = df.reset_index()
@@ -129,7 +128,7 @@ class DataFetcher:
                         df_reset['date'] = df_reset['date'].dt.strftime('%Y-%m-%dT%H:%M:%S')
                     return {
                         "last_updated": df.attrs['last_updated'],
-                        "data": df_reset.to_dict('records')
+                        "data": await asyncio.to_thread(df_reset.to_dict, 'records')
                     }
                 except Exception as e:
                     logger.warning(f"Could not read or parse parquet cache at {path}: {e}")
@@ -137,37 +136,37 @@ class DataFetcher:
             logger.warning(f"Error accessing file cache: {e}")
         return None
 
-    def _write_to_file_cache(self, path: str, data: List[Dict]):
-        """Write data to the file cache with a timestamp.
-
-        Always writes a JSON sidecar for robustness; writes parquet if supported.
-        """
+    async def _write_to_file_cache(self, path: str, data: List[Dict]):
+        """Write data to the file cache asynchronously."""
         try:
             if not data:
                 return
             timestamp = datetime.now().isoformat()
 
-            # Write JSON sidecar
             json_path = os.path.splitext(path)[0] + ".json"
             try:
-                with open(json_path, "w", encoding="utf-8") as f:
-                    json.dump({"last_updated": timestamp, "data": data}, f)
+                content = await asyncio.to_thread(json.dumps, {"last_updated": timestamp, "data": data})
+                async with aiofiles.open(json_path, "w", encoding="utf-8") as f:
+                    await f.write(content)
             except Exception as e:
                 logger.error(f"Could not write JSON cache at {json_path}: {e}")
 
-            # Best-effort parquet write
             if HAS_PANDAS:
                 try:
-                    df = pd.DataFrame(data)
-                    if 'date' in df.columns:
-                        df['date'] = pd.to_datetime(df['date'])
-                        df = df.set_index('date')
-                    df.attrs['last_updated'] = timestamp
-                    df.to_parquet(path)
+                    await asyncio.to_thread(self._write_parquet_file, path, data, timestamp)
                 except Exception as e:
                     logger.warning(f"Could not write parquet cache at {path}: {e}")
         except Exception as e:
             logger.error(f"Could not write to file cache at {path}: {e}")
+
+    def _write_parquet_file(self, path: str, data: List[Dict], timestamp: str):
+        """Synchronous helper for writing parquet file."""
+        df = pd.DataFrame(data)
+        if 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date'])
+            df = df.set_index('date')
+        df.attrs['last_updated'] = timestamp
+        df.to_parquet(path)
 
     def _standardize_historical_payload(self, payload_list: List[Any]) -> List[Dict]:
         """Standardize historical data from various formats (list of dicts, list of lists)"""
@@ -208,30 +207,26 @@ class DataFetcher:
         return standardized_data
 
     async def _get_contract_id_map(self) -> Dict[str, Any]:
-        """Download and cache NSEEQ contract map tradingSymbol -> instrumentId.
-
-        Cached for 12 hours to minimize network calls. Returns empty dict on failure.
-        """
+        """Download and cache NSEEQ contract map tradingSymbol -> instrumentId."""
         cache_key = "contracts_map_nseeq"
         if self._is_cache_valid(cache_key, ttl_seconds=12 * 60 * 60):
             cached = self._get_cache(cache_key)
             if isinstance(cached, dict):
                 return cached
-        # Try to read a persisted local copy first to avoid network calls during a sweep
+
         local_path = Path("data/contracts_nseeq.json")
         id_map: Dict[str, Any] = {}
         try:
-            if local_path.exists():
+            if await aiofiles.os.path.exists(local_path):
                 try:
-                    with open(local_path, "r", encoding="utf-8") as f:
-                        file_data = json.load(f)
+                    async with aiofiles.open(local_path, "r", encoding="utf-8") as f:
+                        content = await f.read()
+                        file_data = await asyncio.to_thread(json.loads, content)
                         if isinstance(file_data, dict):
-                            # Normalize keys when loading so lookups are robust to punctuation/case
                             norm_map: Dict[str, str] = {}
                             for k, v in file_data.items():
                                 try:
                                     kk = str(k).upper().strip()
-                                    # store raw key and a simplified alnum-only key to handle variants
                                     norm_map[kk] = str(v)
                                     simple = ''.join(ch for ch in kk if ch.isalnum())
                                     if simple and simple not in norm_map:
@@ -239,14 +234,12 @@ class DataFetcher:
                                 except Exception:
                                     continue
                             id_map = norm_map
-                            # populate short-term cache
                             if id_map:
                                 self._set_cache(cache_key, id_map, ttl_seconds=12 * 60 * 60)
                                 return id_map
                 except Exception as e:
                     logger.warning(f"Could not read local contract map {local_path}: {e}")
 
-            # Fallback to fetching from provider and persist to disk
             url = "https://api.iiflcapital.com/v1/contractfiles/NSEEQ.json"
             async with httpx.AsyncClient(timeout=20.0) as client:
                 resp = await client.get(url)
@@ -254,7 +247,7 @@ class DataFetcher:
                 data = resp.json()
                 contracts: List[Dict[str, Any]]
                 if isinstance(data, dict) and isinstance(data.get("result"), list):
-                    contracts = data.get("result", [])  # type: ignore
+                    contracts = data.get("result", [])
                 elif isinstance(data, list):
                     contracts = data
                 else:
@@ -270,11 +263,11 @@ class DataFetcher:
                     except Exception:
                         continue
 
-            # Persist to local file for future runs
             try:
-                local_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(local_path, "w", encoding="utf-8") as f:
-                    json.dump(id_map, f)
+                await aiofiles.os.makedirs(local_path.parent, exist_ok=True)
+                content = await asyncio.to_thread(json.dumps, id_map)
+                async with aiofiles.open(local_path, "w", encoding="utf-8") as f:
+                    await f.write(content)
             except Exception as e:
                 logger.warning(f"Could not persist contract map to {local_path}: {e}")
 
@@ -462,14 +455,13 @@ class DataFetcher:
                 to_date = datetime.now().strftime("%Y-%m-%d")
                 from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
-            # Skip file cache in test environment to ensure mocks work properly
             is_test_env = (getattr(self, '_test_mode', False) or 
                           'Mock' in str(type(self.iifl)) or 
                           'pytest' in str(type(self.iifl)))
             
             if not is_test_env:
                 file_cache_path = self._get_file_cache_path(symbol, interval)
-                cached_file_content = self._read_from_file_cache(file_cache_path)
+                cached_file_content = await self._read_from_file_cache(file_cache_path)
             else:
                 cached_file_content = None
 
@@ -477,7 +469,6 @@ class DataFetcher:
                 last_updated = datetime.fromisoformat(cached_file_content.get("last_updated", "1970-01-01T00:00:00"))
                 cached_data = cached_file_content.get("data", [])
 
-                # If cache is from today and has data, fetch only the delta
                 if last_updated.date() == datetime.now().date() and cached_data:
                     last_candle_date_str = cached_data[-1].get("date", "1970-01-01")
                     last_candle_dt = datetime.fromisoformat(last_candle_date_str.split("T")[0])
@@ -489,17 +480,13 @@ class DataFetcher:
                         delta_data = await self._fetch_once_no_fallback(symbol, interval, delta_from_date, to_date)
                         
                         if delta_data:
-                            # Combine, update file cache, and return
                             combined_data = cached_data + delta_data
-                            self._write_to_file_cache(file_cache_path, combined_data)
+                            await self._write_to_file_cache(file_cache_path, combined_data)
                             return combined_data
                     
-                    # If no delta is needed, just return the cached data
                     return cached_data
 
-            # Perform a full fetch if cache is missing, stale, or delta fetch failed
             logger.info(f"Performing full historical data fetch (instrumentId-only) for {symbol} from {from_date} to {to_date}.")
-            # Resolve symbol to instrumentId before making call
             resolved_id = await self._resolve_instrument_id(symbol)
             if resolved_id:
                 result = await self.iifl.get_historical_data(resolved_id, interval, from_date, to_date)
@@ -514,14 +501,12 @@ class DataFetcher:
                             break
                     standardized = self._standardize_historical_payload(raw_list or [])
                     if standardized:
-                        # Cache and return standardized data (skip in test mode)
                         if not is_test_env:
-                            self._write_to_file_cache(file_cache_path, standardized)
+                            await self._write_to_file_cache(file_cache_path, standardized)
                         return standardized
             else:
                 logger.warning(f"Could not resolve symbol {symbol} to instrumentId")
 
-            # Nothing found
             return []
         except Exception as e:
             logger.error(f"Error fetching historical data for {symbol}: {str(e)}")
@@ -536,12 +521,7 @@ class DataFetcher:
         to_date: Optional[str] = None,
         max_concurrency: int = 4,
     ) -> Dict[str, List[Dict]]:
-        """Batch fetch historical OHLCV data with delta-only strict single-call per symbol.
-
-        - Uses file cache per symbol and fetches only missing delta when cache is from today.
-        - No fallback retries and no stale cache return on failures.
-        - Executes remote calls concurrently up to max_concurrency.
-        """
+        """Batch fetch historical OHLCV data with delta-only strict single-call per symbol."""
         if not symbols:
             return {}
         if not from_date or not to_date:
@@ -556,7 +536,7 @@ class DataFetcher:
             async with semaphore:
                 try:
                     file_cache_path = self._get_file_cache_path(sym, interval)
-                    cached_file_content = self._read_from_file_cache(file_cache_path)
+                    cached_file_content = await self._read_from_file_cache(file_cache_path)
                     if cached_file_content:
                         last_updated = datetime.fromisoformat(cached_file_content.get("last_updated", "1970-01-01T00:00:00"))
                         cached_data = cached_file_content.get("data", [])
@@ -568,16 +548,14 @@ class DataFetcher:
                                 delta_data = await self._fetch_once_no_fallback(sym, interval, delta_from_date, to_date)
                                 if delta_data:
                                     combined = cached_data + delta_data
-                                    self._write_to_file_cache(file_cache_path, combined)
+                                    await self._write_to_file_cache(file_cache_path, combined)
                                     results[sym] = combined
                                     return
-                            # No delta needed
                             results[sym] = cached_data
                             return
-                    # Full strict fetch
                     full = await self._fetch_once_no_fallback(sym, interval, from_date, to_date)
                     if full:
-                        self._write_to_file_cache(file_cache_path, full)
+                        await self._write_to_file_cache(file_cache_path, full)
                         results[sym] = full
                     else:
                         results[sym] = []
